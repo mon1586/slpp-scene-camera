@@ -1,4 +1,3 @@
-#include "controller/CameraHook.h"
 #include "controller/SceneCameraController.h"
 #include "controller/SceneEventMailbox.h"
 #include "controller/SexLabEventSink.h"
@@ -32,7 +31,6 @@ namespace
         const auto* messaging = SKSE::GetMessagingInterface();
         switch (a_message->type) {
         case SKSE::MessagingInterface::kPostLoad: {
-            ssc::controller::CameraHook::Install();
             const auto registered = SmoothCamAPI::RegisterInterfaceLoaderCallback(
                 messaging,
                 [](void* a_interface, SmoothCamAPI::InterfaceVersion a_version) {

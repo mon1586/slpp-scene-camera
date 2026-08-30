@@ -1,7 +1,5 @@
 #include "controller/SmoothCamAdapter.h"
 
-#include <REX/W32/KERNEL32.h>
-
 namespace ssc::controller
 {
     namespace
@@ -52,14 +50,6 @@ namespace ssc::controller
         }
         if (!api_->IsCameraEnabled()) {
             logger::warn("Cannot acquire camera: SmoothCam is disabled");
-            return false;
-        }
-
-        const auto currentThread = REX::W32::GetCurrentThreadId();
-        const auto smoothCamThread = api_->GetSmoothCamThreadId();
-        if (currentThread != smoothCamThread) {
-            logger::error("Cannot acquire camera from thread {} (SmoothCam thread is {})",
-                currentThread, smoothCamThread);
             return false;
         }
 

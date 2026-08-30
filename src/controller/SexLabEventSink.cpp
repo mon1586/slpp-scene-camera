@@ -1,5 +1,6 @@
 #include "controller/SexLabEventSink.h"
 
+#include "controller/CameraHook.h"
 #include "controller/SceneEventMailbox.h"
 
 namespace ssc::controller
@@ -18,6 +19,12 @@ namespace ssc::controller
                 return SceneEventType::kAnimationEnding;
             }
             if (a_name == "AnimationEnd"sv) {
+                return SceneEventType::kAnimationEnd;
+            }
+            if (a_name == "HookAnimationStart"sv) {
+                return SceneEventType::kAnimationStart;
+            }
+            if (a_name == "HookAnimationEnd"sv) {
                 return SceneEventType::kAnimationEnd;
             }
             return std::nullopt;
@@ -79,12 +86,20 @@ namespace ssc::controller
         const SKSE::ModCallbackEvent* a_event,
         RE::BSTEventSource<SKSE::ModCallbackEvent>*)
     {
-        if (!a_event || !a_event->sender) {
+        if (!a_event) {
             return RE::BSEventNotifyControl::kContinue;
         }
 
         const auto eventKind = ParseEvent(a_event->eventName.c_str());
         if (!eventKind) {
+            return RE::BSEventNotifyControl::kContinue;
+        }
+
+        const auto senderID = a_event->sender ? a_event->sender->GetFormID() : 0;
+        logger::info("SexLab callback '{}' sender={:08X} strArg='{}' numArg={}",
+            a_event->eventName.c_str(), senderID, a_event->strArg.c_str(), a_event->numArg);
+        if (!a_event->sender) {
+            logger::warn("Ignoring SexLab callback '{}': sender is null", a_event->eventName.c_str());
             return RE::BSEventNotifyControl::kContinue;
         }
 
@@ -95,9 +110,15 @@ namespace ssc::controller
             return RE::BSEventNotifyControl::kContinue;
         }
 
+        if (!CameraHook::Install()) {
+            logger::error("Ignoring SexLab callback '{}': camera update hook is unavailable",
+                a_event->eventName.c_str());
+            return RE::BSEventNotifyControl::kContinue;
+        }
+
         SceneEventMailbox::GetSingleton()->Enqueue({
             *eventKind,
-            a_event->sender->GetFormID(),
+            senderID,
             *threadID,
         });
 
