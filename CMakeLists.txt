@@ -1,5 +1,12 @@
 cmake_minimum_required(VERSION 3.24)
 
+# SKSE loads plugins from the game process, where unrelated mods may ship a
+# different fmt/spdlog DLL. Link vcpkg libraries statically while retaining the
+# release dynamic CRT so the plugin has no private runtime DLL dependencies.
+if(NOT DEFINED VCPKG_TARGET_TRIPLET)
+    set(VCPKG_TARGET_TRIPLET "x64-windows-static-md" CACHE STRING "vcpkg target triplet")
+endif()
+
 project(
     SexlabSceneCamera
     VERSION 0.1.0
