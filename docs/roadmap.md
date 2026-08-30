@@ -2,7 +2,7 @@
 
 ## 1. カメラ切り替え POC
 
-状態: **初回ゲーム内ログ取得済み／カメラスレッド mailbox 修正の再検証待ち**
+状態: **初回ゲーム内ログ取得済み／カメラ状態 Update hook の再検証待ち**
 
 ### 目的
 
@@ -39,8 +39,10 @@ SexLab P+ のプレイヤー参加シーンで SmoothCam から独自カメラ�
 - DLL のコンパイル、リンク、SKSE export、依存 DLL 検査は成功。
 - AE 1.6.1170 で DLL のロード、P+ イベント順序、`strArg` の thread ID、player を含む参加者取得を確認済み。
 - 初回ゲーム内ログで `AddTask` の実行スレッドと SmoothCam スレッドが一致せず、所有権取得前に POC が安全に中止したことを確認済み。
-- 開始・終了命令を固定長 mailbox へ積み、`PlayerCamera::Update` 内で排出する構成へ変更。取得・解放を SmoothCam と同じカメラスレッドへ揃える。
-- 残作業は mailbox のスレッド ID 一致、所有権取得、上空 pose、終了後復帰、NPC-only 除外のゲーム内確認。
+- `PlayerCamera::Update` の vtable hook はインストールログだけが出て実際には呼ばれないことを確認。SmoothCam が実際に利用する `TESCameraState::Update` の後段 hook へ変更済み。
+- SmoothCam の公開実装に存在しないプラグイン側の先行スレッド拒否を削除し、API 自身の結果値を処理する構成へ変更済み。
+- 開始・終了命令は固定長 mailbox へ積み、`TESCameraState::Update` hook で SmoothCam 更新後に排出する。
+- 残作業は hook 発火、所有権取得、上空 pose、終了後復帰、NPC-only 除外のゲーム内確認。
 
 ### POC では扱わないもの
 

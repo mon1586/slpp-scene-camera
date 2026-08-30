@@ -44,7 +44,7 @@ Controller は「いつ独自カメラに切り替え、いつ元へ戻すか」
   - 想定イベント: `AnimationStarting`、`AnimationStart`、`AnimationEnding`、`AnimationEnd`
   - `sender` と thread ID をシーン識別子として保持する。
 - シーン参加者を取得し、プレイヤーが含まれるシーンだけを対象にする。
-- イベント sink では必要な識別情報だけを固定長 mailbox に保存し、カメラや NiNode の操作は `PlayerCamera::Update` のカメラ更新スレッドへ渡す。
+- イベント sink では必要な識別情報だけを固定長 mailbox に保存し、カメラや NiNode の操作は SmoothCam の処理後に呼ばれる `TESCameraState::Update` hook へ渡す。
 - SmoothCam の公式 API を通じてカメラ制御を取得する。
 - 復帰に必要な状態を保持し、終了時に SmoothCam の目標位置へ戻してから制御を解放する。
 - 毎フレーム、参加者の位置・可視範囲などを `CameraFrameInput` に変換して Core へ渡す。
@@ -75,7 +75,9 @@ SmoothCam API の呼び出しとゲームカメラへの書き込みは Controll
 
 イベントから毎フレーム更新へつなぐ際、`AddTask` の自己再投入ループは使わない。連続更新はカメラ更新コールバックまたは更新 hook で行い、イベント sink は開始・終了要求の通知だけに限定する。
 
-SmoothCam の所有権 API は SmoothCam 自身が初期化されたスレッドから呼ぶ必要がある。実機ログでは SKSE `AddTask` の実行スレッドが SmoothCam のスレッドと一致しなかったため、`AddTask` はこの境界には使用しない。`SexLabEventSink` とロード関連メッセージは値だけを `SceneEventMailbox` へ積み、`CameraHook` が `PlayerCamera::Update` 内で mailbox を排出してから状態機械とカメラ出力を更新する。mailbox が満杯になった場合は、終了イベントの取りこぼしによる所有権残留を避けるため次のカメラ更新で強制リセットする。
+初回実装では `GetSmoothCamThreadId()` と現在スレッドをプラグイン側で比較していたが、導入済み SmoothCam の API 実装は所有権を atomic に管理し、`RequestCameraControl` 自体にそのスレッド制約はない。この先行拒否は削除し、API が返す `BadThread` を含む結果値をそのまま扱う。
+
+`SexLabEventSink` とロード関連メッセージは値だけを `SceneEventMailbox` へ積む。`PlayerCamera::Update` の vtable hook は AE 1.6.1170 で呼ばれないことを実機ログで確認したため使用しない。代わりに、シーンイベントを初めて受信した時点で、SmoothCam が差し替え済みの各 `TESCameraState::Update` vtable を後段から hook する。hook は SmoothCam とゲーム本来の更新を先に呼び、次に mailbox を排出し、最後に状態機械とカメラ出力を更新する。これにより独自 pose が同じフレームの SmoothCam 更新後に適用される。mailbox が満杯になった場合は、終了イベントの取りこぼしによる所有権残留を避けるため次のカメラ更新で強制リセットする。
 
 ### SexLab P+ イベント境界
 
