@@ -12,7 +12,8 @@ namespace ssc::core
         }
     }
 
-    CameraPose HighAltitudeRig::Evaluate(const CameraFrameInput& a_input) const noexcept
+    std::optional<CameraPose> HighAltitudeRig::Evaluate(
+        const CameraFrameInput& a_input) const noexcept
     {
         Vec3 center{};
         std::size_t validSubjectCount = 0;
@@ -33,14 +34,21 @@ namespace ssc::core
             center.x *= inverseCount;
             center.y *= inverseCount;
             center.z *= inverseCount;
-        } else if (IsFinite(a_input.fallbackCenter)) {
-            center = a_input.fallbackCenter;
+        } else if (a_input.fallbackCenter && IsFinite(*a_input.fallbackCenter)) {
+            center = *a_input.fallbackCenter;
+        } else {
+            return std::nullopt;
         }
 
-        return {
+        return CameraPose{
             .position = { center.x, center.y, center.z + kAltitude },
-            .target = center,
+            .rotation = {
+                .entries = {{
+                    {{ 0.0F, 0.0F, 1.0F }},
+                    {{ 1.0F, 0.0F, 0.0F }},
+                    {{ 0.0F, 1.0F, 0.0F }},
+                }},
+            },
         };
     }
 }
-

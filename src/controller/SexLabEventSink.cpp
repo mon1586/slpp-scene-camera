@@ -1,7 +1,6 @@
 #include "controller/SexLabEventSink.h"
 
 #include "controller/CameraHook.h"
-#include "controller/SceneEventMailbox.h"
 
 namespace ssc::controller
 {
@@ -56,6 +55,13 @@ namespace ssc::controller
             }
             return static_cast<std::int32_t>(std::lround(a_event.numArg));
         }
+
+        [[nodiscard]] bool IsSexLabSender(const RE::TESForm* a_sender) noexcept
+        {
+            const auto* quest = a_sender ? skyrim_cast<const RE::TESQuest*>(a_sender) : nullptr;
+            const auto* definingFile = quest ? quest->GetFile(0) : nullptr;
+            return definingFile && definingFile->GetFilename() == "SexLab.esm"sv;
+        }
     }
 
     SexLabEventSink* SexLabEventSink::GetSingleton() noexcept
@@ -68,6 +74,12 @@ namespace ssc::controller
     {
         auto* singleton = GetSingleton();
         if (singleton->registered_) {
+            return;
+        }
+
+        auto* dataHandler = RE::TESDataHandler::GetSingleton();
+        if (!dataHandler || !dataHandler->LookupModByName("SexLab.esm"sv)) {
+            logger::warn("SexLab.esm is not loaded; ModCallbackEvent sink will not be registered");
             return;
         }
 
@@ -90,37 +102,47 @@ namespace ssc::controller
             return RE::BSEventNotifyControl::kContinue;
         }
 
-        const auto eventKind = ParseEvent(a_event->eventName.c_str());
-        if (!eventKind) {
-            return RE::BSEventNotifyControl::kContinue;
-        }
+        try {
+            const auto eventKind = ParseEvent(a_event->eventName.c_str());
+            if (!eventKind) {
+                return RE::BSEventNotifyControl::kContinue;
+            }
 
-        const auto senderID = a_event->sender ? a_event->sender->GetFormID() : 0;
-        logger::info("SexLab callback '{}' sender={:08X} strArg='{}' numArg={}",
-            a_event->eventName.c_str(), senderID, a_event->strArg.c_str(), a_event->numArg);
-        if (!a_event->sender) {
-            logger::warn("Ignoring SexLab callback '{}': sender is null", a_event->eventName.c_str());
-            return RE::BSEventNotifyControl::kContinue;
-        }
+            if (!IsSexLabSender(a_event->sender)) {
+                logger::debug("Ignoring shared ModCallbackEvent '{}': sender is not a SexLab.esm quest",
+                    a_event->eventName.c_str());
+                return RE::BSEventNotifyControl::kContinue;
+            }
 
-        const auto threadID = ParseThreadID(*a_event);
-        if (!threadID) {
-            logger::warn("Ignoring SexLab event with invalid thread ID payload (strArg='{}', numArg={})",
-                a_event->strArg.c_str(), a_event->numArg);
-            return RE::BSEventNotifyControl::kContinue;
-        }
+            const auto senderID = a_event->sender->GetFormID();
+            logger::debug("SexLab callback '{}' sender={:08X} strArg='{}' numArg={}",
+                a_event->eventName.c_str(), senderID, a_event->strArg.c_str(), a_event->numArg);
 
-        if (!CameraHook::Install()) {
-            logger::error("Ignoring SexLab callback '{}': camera update hook is unavailable",
-                a_event->eventName.c_str());
-            return RE::BSEventNotifyControl::kContinue;
-        }
+            const auto threadID = ParseThreadID(*a_event);
+            if (!threadID) {
+                logger::warn("Ignoring SexLab event with invalid thread ID payload (strArg='{}', numArg={})",
+                    a_event->strArg.c_str(), a_event->numArg);
+                return RE::BSEventNotifyControl::kContinue;
+            }
 
-        SceneEventMailbox::GetSingleton()->Enqueue({
-            *eventKind,
-            senderID,
-            *threadID,
-        });
+            auto* mailbox = SceneEventMailbox::GetSingleton();
+            CameraHook::SubmitEvent({
+                *eventKind,
+                senderID,
+                *threadID,
+                mailbox->CurrentGeneration(),
+            });
+        } catch (const std::exception& exception) {
+            try {
+                logger::critical("SexLab event adapter failed: {}", exception.what());
+            } catch (...) {
+            }
+        } catch (...) {
+            try {
+                logger::critical("SexLab event adapter failed with an unknown exception");
+            } catch (...) {
+            }
+        }
 
         return RE::BSEventNotifyControl::kContinue;
     }

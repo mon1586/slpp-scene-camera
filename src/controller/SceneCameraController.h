@@ -1,6 +1,8 @@
 #pragma once
 
 #include "controller/CameraOutput.h"
+#include "controller/SceneEventMailbox.h"
+#include "controller/SceneSession.h"
 #include "controller/SmoothCamAdapter.h"
 #include "core/HighAltitudeRig.h"
 
@@ -11,51 +13,35 @@ namespace ssc::controller
     public:
         static SceneCameraController* GetSingleton() noexcept;
 
-        void SetSmoothCamInterface(void* a_interface, SmoothCamAPI::InterfaceVersion a_version) noexcept;
+        void SetSmoothCamInterface(void* a_interface, SmoothCamAPI::InterfaceVersion a_version);
 
-        void OnAnimationStarting(RE::FormID a_senderID, std::int32_t a_threadID) noexcept;
-        void OnAnimationStart(RE::FormID a_senderID, std::int32_t a_threadID) noexcept;
-        void OnAnimationEnding(RE::FormID a_senderID, std::int32_t a_threadID) noexcept;
-        void OnAnimationEnd(RE::FormID a_senderID, std::int32_t a_threadID) noexcept;
+        [[nodiscard]] bool PrepareStartEvent(SceneEvent& a_event) const;
+        [[nodiscard]] bool NeedsUpdate() const noexcept;
 
-        void Update(RE::PlayerCamera* a_camera) noexcept;
-        void Reset(std::string_view a_reason) noexcept;
+        void OnAnimationStarting(const SceneEvent& a_event);
+        void OnAnimationStart(const SceneEvent& a_event);
+        void OnAnimationEnding(const SceneEvent& a_event);
+        void OnAnimationEnd(const SceneEvent& a_event);
+
+        void Update(RE::PlayerCamera* a_camera);
+        void Reset(std::string_view a_reason);
+        void RequestReset() noexcept;
+        void EmergencyReset() noexcept;
 
     private:
-        enum class State
-        {
-            kIdle,
-            kPreparing,
-            kActive,
-            kRestoring,
-        };
-
-        struct SceneKey
-        {
-            RE::FormID senderID{ 0 };
-            std::int32_t threadID{ -1 };
-
-            [[nodiscard]] friend bool operator==(const SceneKey&, const SceneKey&) = default;
-        };
-
-        struct Participants
-        {
-            std::vector<RE::ActorHandle> handles;
-            bool containsPlayer{ false };
-        };
-
-        [[nodiscard]] Participants CollectParticipants(RE::FormID a_senderID) const noexcept;
-        [[nodiscard]] bool Matches(const SceneKey& a_key) const noexcept;
-        void Prepare(const SceneKey& a_key) noexcept;
-        void Restore(std::string_view a_reason) noexcept;
+        [[nodiscard]] SceneParticipantSnapshot CollectParticipants(RE::FormID a_senderID) const;
+        void Prepare(const SceneKey& a_key, const SceneParticipantSnapshot& a_participants);
+        void Restore(std::string_view a_reason);
+        void ApplyRequestedReset();
         void Clear() noexcept;
 
-        State state_{ State::kIdle };
-        std::optional<SceneKey> scene_;
-        std::vector<RE::ActorHandle> participants_;
+        SceneSession session_;
+        SceneParticipantSnapshot participants_;
+        std::chrono::steady_clock::time_point activeSince_{};
+        std::atomic_bool active_{ false };
+        std::atomic_bool resetRequested_{ false };
         SmoothCamAdapter smoothCam_;
         CameraOutput output_;
         core::HighAltitudeRig rig_;
     };
 }
-

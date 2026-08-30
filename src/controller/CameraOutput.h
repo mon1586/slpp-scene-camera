@@ -4,15 +4,22 @@
 
 namespace ssc::controller
 {
+    enum class CameraApplyResult
+    {
+        kApplied,
+        kUnsupportedState,
+        kMissingCamera,
+    };
+
     class CameraOutput
     {
     public:
-        void Apply(RE::PlayerCamera* a_camera, const core::CameraPose& a_pose) noexcept;
+        [[nodiscard]] CameraApplyResult Apply(
+            RE::PlayerCamera* a_camera,
+            const core::CameraPose& a_pose);
 
     private:
         [[nodiscard]] static RE::NiCamera* FindNiCamera(RE::NiAVObject* a_object) noexcept;
 
-        bool loggedMissingCamera_{ false };
     };
 }
-

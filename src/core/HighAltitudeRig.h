@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <optional>
 #include <span>
 
 namespace ssc::core
@@ -14,13 +16,18 @@ namespace ssc::core
     struct CameraFrameInput
     {
         std::span<const Vec3> subjects;
-        Vec3 fallbackCenter;
+        std::optional<Vec3> fallbackCenter;
+    };
+
+    struct RotationMatrix
+    {
+        std::array<std::array<float, 3>, 3> entries{};
     };
 
     struct CameraPose
     {
         Vec3 position;
-        Vec3 target;
+        RotationMatrix rotation;
     };
 
     class HighAltitudeRig
@@ -28,7 +35,7 @@ namespace ssc::core
     public:
         static constexpr float kAltitude = 3000.0F;
 
-        [[nodiscard]] CameraPose Evaluate(const CameraFrameInput& a_input) const noexcept;
+        [[nodiscard]] std::optional<CameraPose> Evaluate(
+            const CameraFrameInput& a_input) const noexcept;
     };
 }
-

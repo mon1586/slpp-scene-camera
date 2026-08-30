@@ -15,18 +15,15 @@ namespace ssc::controller
             updateWorldToScreen(a_camera);
         }
 
-        [[nodiscard]] RE::NiMatrix3 TopDownCameraRotation() noexcept
+        [[nodiscard]] RE::NiMatrix3 ToGameRotation(
+            const core::RotationMatrix& a_rotation) noexcept
         {
             RE::NiMatrix3 rotation;
-            rotation.entry[0][0] = 0.0F;
-            rotation.entry[0][1] = 0.0F;
-            rotation.entry[0][2] = 1.0F;
-            rotation.entry[1][0] = 1.0F;
-            rotation.entry[1][1] = 0.0F;
-            rotation.entry[1][2] = 0.0F;
-            rotation.entry[2][0] = 0.0F;
-            rotation.entry[2][1] = 1.0F;
-            rotation.entry[2][2] = 0.0F;
+            for (std::size_t row = 0; row < 3; ++row) {
+                for (std::size_t column = 0; column < 3; ++column) {
+                    rotation.entry[row][column] = a_rotation.entries[row][column];
+                }
+            }
             return rotation;
         }
     }
@@ -53,38 +50,43 @@ namespace ssc::controller
         return nullptr;
     }
 
-    void CameraOutput::Apply(RE::PlayerCamera* a_camera, const core::CameraPose& a_pose) noexcept
+    CameraApplyResult CameraOutput::Apply(
+        RE::PlayerCamera* a_camera,
+        const core::CameraPose& a_pose)
     {
-        if (!a_camera || !a_camera->cameraRoot) {
-            return;
+        if (!a_camera || !a_camera->currentState) {
+            return CameraApplyResult::kMissingCamera;
+        }
+
+        const auto stateID = a_camera->currentState->id;
+        if (stateID != RE::CameraState::kThirdPerson && stateID != RE::CameraState::kAnimated) {
+            return CameraApplyResult::kUnsupportedState;
+        }
+
+        if (!a_camera->cameraRoot) {
+            return CameraApplyResult::kMissingCamera;
         }
 
         auto* niCamera = FindNiCamera(a_camera->cameraRoot.get());
         if (!niCamera) {
-            if (!loggedMissingCamera_) {
-                logger::error("Player camera NiCamera node was not found; POC pose cannot be applied");
-                loggedMissingCamera_ = true;
-            }
-            return;
+            return CameraApplyResult::kMissingCamera;
         }
 
-        loggedMissingCamera_ = false;
         const RE::NiPoint3 position{ a_pose.position.x, a_pose.position.y, a_pose.position.z };
 
         a_camera->cameraRoot->local.translate = position;
         a_camera->cameraRoot->world.translate = position;
         niCamera->world.translate = position;
 
-        // This fixed transform is intentionally POC-only: the pose is directly above
-        // its target, so the camera always looks vertically down.
         a_camera->cameraRoot->local.rotate = RE::NiMatrix3{};
         a_camera->cameraRoot->world.rotate = RE::NiMatrix3{};
-        niCamera->world.rotate = TopDownCameraRotation();
+        niCamera->world.rotate = ToGameRotation(a_pose.rotation);
 
         if (auto* thirdPerson = skyrim_cast<RE::ThirdPersonState*>(a_camera->currentState.get())) {
             thirdPerson->translation = position;
         }
 
         UpdateWorldToScreen(niCamera);
+        return CameraApplyResult::kApplied;
     }
 }

@@ -35,7 +35,6 @@ SexLab P+ のプレイヤー参加シーンで SmoothCam から独自カメラ�
 - P+ の未接頭辞 native `ModCallbackEvent` と公式 Papyrus hook の関係をソース照合済み。
 - P+ の `SendModEvent(HookEvent, thread_id)` が thread ID を `strArg` に載せることへ対応済み。
 - SmoothCam V2 API による取得、interpolator 継続、goal 復帰、解放を実装済み。
-- Core の参加者中心・フォールバック・無効座標除外テストは成功。
 - DLL のコンパイル、リンク、SKSE export、依存 DLL 検査は成功。
 - AE 1.6.1170 で DLL のロード、P+ イベント順序、`strArg` の thread ID、player を含む参加者取得を確認済み。
 - 初回ゲーム内ログで `AddTask` の実行スレッドと SmoothCam スレッドが一致せず、所有権取得前に POC が安全に中止したことを確認済み。
@@ -44,7 +43,10 @@ SexLab P+ のプレイヤー参加シーンで SmoothCam から独自カメラ�
 - 開始・終了命令は固定長 mailbox へ積み、`TESCameraState::Update` hook で SmoothCam 更新後に排出する。
 - AE 1.6.1170 で `TESCameraState::Update` hook の発火、SmoothCam の所有権取得、上空 pose、終了後の goal 復帰と所有権解放をゲーム内確認済み。
 - `RELOCATION_ID` のSE/AE順序を逆にしたことで、ビルドとロードは成功しても対象コードパスでCTDする事例を確認・修正済み。再発防止策は `native-integration-failure-patterns.md` に記録した。
-- 残作業は NPC-only 除外、重複・古い終了イベント、シーン中断時の復旧のゲーム内確認。
+- レビュー後の hardening として、SexLab.esm sender 検証、ゲームスレッドでの参加者 snapshot、終了・中断 fail-safe、世代付き mailbox、専用 thunk による vtable chain 保持、Idle fast path、対応 camera-state 制限を実装済み。
+- Core の現行上空 POC は将来仕様として守る対象ではないため、専用 Core テスト target は削除した。代わりに、Controller の scene key と状態遷移だけを独立した `SceneSession` テストで固定する。
+- hardening 後 DLL のコンパイル、リンク、SKSE export、依存 DLL 検査は成功。ゲーム起動、追加ログ、主経路の動作も再確認済み。
+- 残作業は hardening 後の主経路、NPC-only、重複・古い終了イベント、シーン中断、ロード、特殊カメラ、後発カメラ Mod との共存確認。
 
 ### POC では扱わないもの
 

@@ -44,13 +44,14 @@ Controller は「いつ独自カメラに切り替え、いつ元へ戻すか」
   - 想定イベント: `AnimationStarting`、`AnimationStart`、`AnimationEnding`、`AnimationEnd`
   - `sender` と thread ID をシーン識別子として保持する。
 - シーン参加者を取得し、プレイヤーが含まれるシーンだけを対象にする。
-- イベント sink では必要な識別情報だけを固定長 mailbox に保存し、カメラや NiNode の操作は SmoothCam の処理後に呼ばれる `TESCameraState::Update` hook へ渡す。
+- イベント sink では送信元と payload の検証だけを行い、ゲーム状態の参照と hook 導入は一回限りのゲームスレッド task へ渡す。
+- quest alias の走査はゲームスレッド task で固定長 snapshot に変換し、カメラ更新 hook 内では alias lock や動的確保を行わない。
 - SmoothCam の公式 API を通じてカメラ制御を取得する。
 - 復帰に必要な状態を保持し、終了時に SmoothCam の目標位置へ戻してから制御を解放する。
 - 毎フレーム、参加者の位置・可視範囲などを `CameraFrameInput` に変換して Core へ渡す。
 - Core が返した `CameraPose` を実際のゲームカメラへ適用する。
 - 重複開始、古い終了イベント、NPC のみのシーン、制御取得失敗を安全に無視または復旧する。
-- ロード、新規ゲーム、シーン中断などでもカメラ制御を保持したままにしない。
+- `AnimationEnding`、参加者消失、非対応カメラ状態、所有権喪失、watchdog、ロード、新規ゲームのいずれからでも制御を残留させない。
 
 SmoothCam API の呼び出しとゲームカメラへの書き込みは Controller 内部の adapter だけが行う。Core からこれらの API を直接呼び出してはならない。
 
@@ -68,7 +69,8 @@ SmoothCam API の呼び出しとゲームカメラへの書き込みは Controll
 ### 想定コンポーネント
 
 - `SexLabPEventSource`: `ModCallbackEvent` を受信し、シーンイベントへ正規化する。
-- `SceneCameraController`: 状態機械とシーンのライフサイクルを管理する。
+- `SceneSession`: Skyrim API から独立した純粋な状態機械として、scene key と遷移だけを管理する。
+- `SceneCameraController`: 参加者 snapshot、所有権、Core、出力を調停し、`SceneSession` を駆動する。
 - `SmoothCamOwnership`: SmoothCam の制御取得、復帰、解放を隠蔽する。
 - `CameraOutput`: `CameraPose` をゲームカメラへ適用する。
 - `GameThreadMailbox`: イベント受信側から安全な更新コンテキストへ命令を渡す。
@@ -77,7 +79,11 @@ SmoothCam API の呼び出しとゲームカメラへの書き込みは Controll
 
 初回実装では `GetSmoothCamThreadId()` と現在スレッドをプラグイン側で比較していたが、導入済み SmoothCam の API 実装は所有権を atomic に管理し、`RequestCameraControl` 自体にそのスレッド制約はない。この先行拒否は削除し、API が返す `BadThread` を含む結果値をそのまま扱う。
 
-`SexLabEventSink` とロード関連メッセージは値だけを `SceneEventMailbox` へ積む。`PlayerCamera::Update` の vtable hook は AE 1.6.1170 で呼ばれないことを実機ログで確認したため使用しない。代わりに、シーンイベントを初めて受信した時点で、SmoothCam が差し替え済みの各 `TESCameraState::Update` vtable を後段から hook する。hook は SmoothCam とゲーム本来の更新を先に呼び、次に mailbox を排出し、最後に状態機械とカメラ出力を更新する。これにより独自 pose が同じフレームの SmoothCam 更新後に適用される。mailbox が満杯になった場合は、終了イベントの取りこぼしによる所有権残留を避けるため次のカメラ更新で強制リセットする。
+`PlayerCamera::Update` の vtable hook は AE 1.6.1170 で呼ばれないことを実機ログで確認したため使用しない。代わりに、SmoothCam V2 が使用可能で、かつ最初のプレイヤー参加シーンをゲームスレッド上で確認した時点で、各 `TESCameraState::Update` vtable を SmoothCam の後段から hook する。hook はゲームと既存 Mod の更新を先に呼び、次に mailbox を排出し、最後に状態機械とカメラ出力を更新する。
+
+各 vtable slot には専用 thunk と専用 original を割り当てる。後発 Mod が hook 済み vtable を複製しても original の探索を vtable アドレスに依存させず、後発 Mod が slot を再差し替えした場合は camera-state 遷移または次回シーン開始時に再走査して新しいチェーンを作る。チェーン中に旧 thunk と新 thunk の両方が含まれる場合も、thread-local の入れ子判定により SSC の後処理は最外周で一度だけ行う。
+
+Idle かつ mailbox が空なら、hook は original 呼び出し後に atomic 判定だけで戻る。mailbox が満杯の場合は次の hook で強制リセットする。ロード境界では generation を更新して旧世代イベントを破棄し、所有権解放要求は mailbox の次回排出だけに依存させない。
 
 ### SexLab P+ イベント境界
 
@@ -85,7 +91,7 @@ SmoothCam API の呼び出しとゲームカメラへの書き込みは Controll
 
 SKSE の `Form.SendModEvent` は `(eventName, strArg, numArg)` なので、上記の2引数呼び出しでは thread ID は数値引数ではなく `strArg` に文字列として格納される。Controller は `strArg` を整数として解析し、他の sender との互換性のため `numArg` をフォールバックにする。`sender` は thread quest の FormID として保持し、thread ID と組み合わせて古い終了イベントを排除する。
 
-この未接頭辞イベントは公開 API には記載されていないため、POC でイベント名・`sender`・payload を必ずログ検証する。将来 P+ がこの互換イベントを削除した場合は、公式 `HookAnimationStart` / `HookAnimationEnd` を受ける最小 Papyrus bridge を Controller 入力 adapter として追加する。Core には影響させない。
+この未接頭辞イベントは公開 API には記載されていない。共有 dispatcher 上の同名イベントによる誤作動を防ぐため、sender は `TESQuest` かつ定義元ファイルが `SexLab.esm` の場合だけ受理する。将来 P+ が互換イベントを削除した場合は、公式 `HookAnimationStart` / `HookAnimationEnd` を受ける最小 Papyrus bridge を Controller 入力 adapter として追加する。Core には影響させない。
 
 ## Core レイヤー
 
@@ -103,11 +109,11 @@ struct CameraFrameInput {
 
 struct CameraPose {
     Vec3 position;
-    Rotation rotation;
+    RotationMatrix rotation;
     float fov;
 };
 
-CameraPose Evaluate(const CameraFrameInput& input);
+std::optional<CameraPose> Evaluate(const CameraFrameInput& input);
 ```
 
 型名は概念を示すもので、実装時に確定する。
@@ -131,7 +137,7 @@ CameraPose Evaluate(const CameraFrameInput& input);
 
 ## POC 用 Core
 
-第1段階では画作りの品質を評価しない。参加者群の中心を基準に、固定の大きな Z オフセットを加えた上空位置へカメラを移し、下方へ向ける。参加者情報を取得できない場合はプレイヤー位置を基準にする。
+第1段階では画作りの品質を評価しない。参加者群の中心を基準に、固定の大きな Z オフセットを加えた上空位置と真下向き回転を Core が返す。参加者情報を取得できない場合はプレイヤー位置を基準にし、それも無効なら pose を返さず Controller が復帰する。`CameraOutput` は Core の pose を機械的にゲーム型へ写すだけで、構図を決めない。
 
 この挙動の目的は、独自カメラへ制御が切り替わったことを見た目で明確に確認することだけである。高さ、FOV、補間方法は POC の仮値とし、正式なカメラ機能には引き継がない。
 

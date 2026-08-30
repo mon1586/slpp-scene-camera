@@ -18,7 +18,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 
-option(SSC_BUILD_TESTS "Build the Core layer unit tests" ON)
+option(SSC_BUILD_TESTS "Build Controller layer unit tests" ON)
 
 # The POC uses a vtable hook and does not allocate a trampoline. Keep CommonLib's
 # own tests and patch-safety-only dependency out of this consumer build.
@@ -40,6 +40,7 @@ set(SSC_SOURCES
     src/controller/CameraOutput.h
     src/controller/SceneEventMailbox.cpp
     src/controller/SceneEventMailbox.h
+    src/controller/SceneSession.h
     src/controller/SceneCameraController.cpp
     src/controller/SceneCameraController.h
     src/controller/SexLabEventSink.cpp
@@ -98,11 +99,22 @@ set_target_properties(
 if(SSC_BUILD_TESTS)
     enable_testing()
     add_executable(
-        SexlabSceneCameraCoreTests
-        tests/HighAltitudeRigTests.cpp
-        src/core/HighAltitudeRig.cpp
-        src/core/HighAltitudeRig.h
+        SexlabSceneCameraControllerTests
+        tests/SceneSessionTests.cpp
+        src/controller/SceneSession.h
     )
-    target_include_directories(SexlabSceneCameraCoreTests PRIVATE src)
-    add_test(NAME SexlabSceneCamera.Core COMMAND SexlabSceneCameraCoreTests)
+    target_include_directories(SexlabSceneCameraControllerTests PRIVATE src)
+    if(MSVC)
+        target_compile_options(
+            SexlabSceneCameraControllerTests
+            PRIVATE
+                /EHsc
+                /permissive-
+                /W4
+        )
+    endif()
+    add_test(
+        NAME SexlabSceneCamera.Controller.SceneSession
+        COMMAND SexlabSceneCameraControllerTests
+    )
 endif()

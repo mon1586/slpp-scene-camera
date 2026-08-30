@@ -19,7 +19,16 @@ namespace
         spdlog::set_default_logger(std::move(log));
         spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] %v");
         spdlog::set_level(spdlog::level::info);
-        spdlog::flush_on(spdlog::level::info);
+        spdlog::flush_on(spdlog::level::warn);
+    }
+
+    void QueueLifecycleReset(std::string_view a_reason)
+    {
+        auto* mailbox = ssc::controller::SceneEventMailbox::GetSingleton();
+        mailbox->BeginNewGeneration();
+        auto* controller = ssc::controller::SceneCameraController::GetSingleton();
+        controller->RequestReset();
+        logger::info("Camera reset requested: {}", a_reason);
     }
 
     void MessageHandler(SKSE::MessagingInterface::Message* a_message)
@@ -28,37 +37,52 @@ namespace
             return;
         }
 
-        const auto* messaging = SKSE::GetMessagingInterface();
-        switch (a_message->type) {
-        case SKSE::MessagingInterface::kPostLoad: {
-            const auto registered = SmoothCamAPI::RegisterInterfaceLoaderCallback(
-                messaging,
-                [](void* a_interface, SmoothCamAPI::InterfaceVersion a_version) {
-                    ssc::controller::SceneCameraController::GetSingleton()->SetSmoothCamInterface(
-                        a_interface, a_version);
-                });
-            logger::info("SmoothCam interface callback registration: {}", registered ? "OK" : "FAILED");
-            break;
-        }
-        case SKSE::MessagingInterface::kPostPostLoad: {
-            const auto requested = SmoothCamAPI::RequestInterface(
-                messaging, SmoothCamAPI::InterfaceVersion::V2);
-            logger::info("SmoothCam V2 interface request dispatched: {}", requested ? "yes" : "no listener");
-            break;
-        }
-        case SKSE::MessagingInterface::kDataLoaded:
-            ssc::controller::SexLabEventSink::Register();
-            break;
-        case SKSE::MessagingInterface::kPreLoadGame:
-            ssc::controller::SceneEventMailbox::GetSingleton()->Enqueue(
-                { ssc::controller::SceneEventType::kResetPreLoadGame });
-            break;
-        case SKSE::MessagingInterface::kNewGame:
-            ssc::controller::SceneEventMailbox::GetSingleton()->Enqueue(
-                { ssc::controller::SceneEventType::kResetNewGame });
-            break;
-        default:
-            break;
+        try {
+            const auto* messaging = SKSE::GetMessagingInterface();
+            switch (a_message->type) {
+            case SKSE::MessagingInterface::kPostLoad: {
+                const auto registered = SmoothCamAPI::RegisterInterfaceLoaderCallback(
+                    messaging,
+                    [](void* a_interface, SmoothCamAPI::InterfaceVersion a_version) {
+                        try {
+                            ssc::controller::SceneCameraController::GetSingleton()->SetSmoothCamInterface(
+                                a_interface, a_version);
+                        } catch (...) {
+                            ssc::controller::SceneCameraController::GetSingleton()->RequestReset();
+                        }
+                    });
+                logger::info("SmoothCam interface callback registration: {}", registered ? "OK" : "FAILED");
+                break;
+            }
+            case SKSE::MessagingInterface::kPostPostLoad: {
+                const auto requested = SmoothCamAPI::RequestInterface(
+                    messaging, SmoothCamAPI::InterfaceVersion::V2);
+                logger::info("SmoothCam V2 interface request dispatched: {}", requested ? "yes" : "no listener");
+                break;
+            }
+            case SKSE::MessagingInterface::kDataLoaded:
+                ssc::controller::SexLabEventSink::Register();
+                break;
+            case SKSE::MessagingInterface::kPreLoadGame:
+                QueueLifecycleReset("pre-load game"sv);
+                break;
+            case SKSE::MessagingInterface::kPostLoadGame:
+                QueueLifecycleReset("post-load game"sv);
+                break;
+            case SKSE::MessagingInterface::kNewGame:
+                QueueLifecycleReset("new game"sv);
+                break;
+            default:
+                break;
+            }
+        } catch (const std::exception& exception) {
+            try {
+                logger::critical("SKSE message handler failed: {}", exception.what());
+            } catch (...) {
+            }
+            ssc::controller::SceneCameraController::GetSingleton()->RequestReset();
+        } catch (...) {
+            ssc::controller::SceneCameraController::GetSingleton()->RequestReset();
         }
     }
 }

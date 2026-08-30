@@ -12,27 +12,61 @@ namespace ssc::controller
         return std::addressof(singleton);
     }
 
-    void SceneEventMailbox::Enqueue(SceneEvent a_event) noexcept
+    std::uint64_t SceneEventMailbox::CurrentGeneration() const noexcept
+    {
+        return generation_.load(std::memory_order_acquire);
+    }
+
+    void SceneEventMailbox::BeginNewGeneration()
     {
         std::scoped_lock lock{ mutex_ };
+        generation_.fetch_add(1, std::memory_order_acq_rel);
+        head_ = 0;
+        size_ = 0;
+        emergencyReset_.store(false, std::memory_order_release);
+        hasPending_.store(false, std::memory_order_release);
+    }
+
+    bool SceneEventMailbox::HasPending() const noexcept
+    {
+        return hasPending_.load(std::memory_order_acquire);
+    }
+
+    bool SceneEventMailbox::Enqueue(SceneEvent a_event)
+    {
+        if (a_event.generation != CurrentGeneration()) {
+            return false;
+        }
+
+        std::scoped_lock lock{ mutex_ };
+        if (a_event.generation != generation_.load(std::memory_order_relaxed)) {
+            return false;
+        }
         if (emergencyReset_.load(std::memory_order_acquire)) {
-            return;
+            return false;
         }
         if (size_ == events_.size()) {
             emergencyReset_.store(true, std::memory_order_release);
             head_ = 0;
             size_ = 0;
+            hasPending_.store(true, std::memory_order_release);
             logger::error("Scene event mailbox overflow; camera will be reset on the next camera update");
-            return;
+            return false;
         }
 
         const auto tail = (head_ + size_) % events_.size();
         events_[tail] = a_event;
         ++size_;
+        hasPending_.store(true, std::memory_order_release);
+        return true;
     }
 
-    void SceneEventMailbox::DispatchPending() noexcept
+    void SceneEventMailbox::DispatchPending()
     {
+        if (!HasPending()) {
+            return;
+        }
+
         std::call_once(dispatchThreadLogged_, [] {
             logger::info("Scene event mailbox dispatch thread is {}", REX::W32::GetCurrentThreadId());
         });
@@ -51,6 +85,7 @@ namespace ssc::controller
             }
             head_ = 0;
             size_ = 0;
+            hasPending_.store(false, std::memory_order_release);
         }
 
         auto* controller = SceneCameraController::GetSingleton();
@@ -61,24 +96,21 @@ namespace ssc::controller
 
         for (std::size_t index = 0; index < pendingCount; ++index) {
             const auto& event = pending[index];
+            if (event.generation != CurrentGeneration()) {
+                continue;
+            }
             switch (event.type) {
             case SceneEventType::kAnimationStarting:
-                controller->OnAnimationStarting(event.senderID, event.threadID);
+                controller->OnAnimationStarting(event);
                 break;
             case SceneEventType::kAnimationStart:
-                controller->OnAnimationStart(event.senderID, event.threadID);
+                controller->OnAnimationStart(event);
                 break;
             case SceneEventType::kAnimationEnding:
-                controller->OnAnimationEnding(event.senderID, event.threadID);
+                controller->OnAnimationEnding(event);
                 break;
             case SceneEventType::kAnimationEnd:
-                controller->OnAnimationEnd(event.senderID, event.threadID);
-                break;
-            case SceneEventType::kResetPreLoadGame:
-                controller->Reset("pre-load game"sv);
-                break;
-            case SceneEventType::kResetNewGame:
-                controller->Reset("new game"sv);
+                controller->OnAnimationEnd(event);
                 break;
             }
         }
