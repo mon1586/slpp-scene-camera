@@ -1,0 +1,7 @@
+[submodule "lib/commonlibsse-ng"]
+	path = lib/commonlibsse-ng
+	url = https://github.com/alandtse/CommonLibVR.git
+	branch = ng
+[submodule "external/smoothcam"]
+	path = external/smoothcam
+	url = https://github.com/mwilsnd/SkyrimSE-SmoothCam.git
