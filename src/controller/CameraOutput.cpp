@@ -8,7 +8,9 @@ namespace ssc::controller
         {
             using UpdateWorldToScreen_t = void (*)(RE::NiCamera*);
             static REL::Relocation<UpdateWorldToScreen_t> updateWorldToScreen{
-                RELOCATION_ID(70641, 69271)
+                // CommonLib expects IDs in (SE, AE) order. SmoothCam uses the same
+                // 69271/70641 pair for this function.
+                RELOCATION_ID(69271, 70641)
             };
             updateWorldToScreen(a_camera);
         }
@@ -86,4 +88,3 @@ namespace ssc::controller
         UpdateWorldToScreen(niCamera);
     }
 }
-
