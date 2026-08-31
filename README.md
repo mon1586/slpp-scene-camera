@@ -2,9 +2,9 @@
 
 Native SKSE camera-controller proof of concept for SexLab P+ and SmoothCam.
 
-When a player-involved SexLab P+ scene reaches `AnimationStart`, the plugin captures a fixed scene anchor from the participants' Pelvis nodes after the camera update boundary. Its position is the Pelvis average; with multiple participants its forward points from that average toward the player Pelvis, and otherwise it falls back to the inverse of the player's horizontal forward. Camera presets and collision/raycast selection are not implemented yet, so the plugin deliberately leaves SmoothCam in control rather than placing a camera inside the scene anchor. A matching `AnimationEnding` or `AnimationEnd` discards the anchor; lifecycle resets, invalid participants, and a watchdog provide additional fail-safe exits.
+When a player-involved SexLab P+ scene reaches `AnimationStart`, the plugin captures a fixed scene anchor from the participants' Pelvis nodes after the camera update boundary. Its position is the Pelvis average; with multiple participants its forward points from that average toward the player Pelvis, and otherwise it falls back to the inverse of the player's horizontal forward. A matching `AnimationChange` schedules an anchor recapture one second later while preserving the previous anchor during the wait. Camera presets and collision/raycast selection are not implemented yet, so the plugin deliberately leaves SmoothCam in control rather than placing a camera inside the scene anchor. Development builds also place a direction arrow at the captured anchor. A matching `AnimationEnding` or `AnimationEnd` discards the anchor and marker; lifecycle resets, invalid participants, and a watchdog provide additional fail-safe exits.
 
-The POC has no ESP and no dedicated Papyrus script. SexLab P+ integration uses the native SKSE `ModCallbackEvent` dispatcher. P+ currently emits unprefixed `AnimationStart`/`AnimationEnd` compatibility events alongside its documented Papyrus `HookAnimationStart`/`HookAnimationEnd` API. Because P+ passes `thread_id` as the second `SendModEvent` argument, the native adapter parses it from `strArg` and treats `numArg` only as a compatibility fallback. Generic event names are accepted only when the sender is a quest defined by `SexLab.esm`.
+The POC has no ESP and no dedicated Papyrus script. SexLab P+ integration uses the native SKSE `ModCallbackEvent` dispatcher. P+ currently emits unprefixed `AnimationStart`/`AnimationChange`/`AnimationEnd` compatibility events alongside its documented Papyrus hook API. Because P+ passes `thread_id` as the second `SendModEvent` argument, the native adapter parses it from `strArg` and treats `numArg` only as a compatibility fallback. Generic event names are accepted only when the sender is a quest defined by `SexLab.esm`.
 
 ## Requirements
 
@@ -27,16 +27,20 @@ git -C lib/commonlibsse-ng submodule update --init extern/openvr
 
 `build.cmd` configures and builds the DLL, builds and runs the state/Core tests, verifies the x64/SKSE exports and DLL dependencies, then writes the deployable DLL and PDB to `dist/SKSE/Plugins`. Use `test.cmd` to build and run only the tests. Both commands accept `-Configuration` and `-BuildDirectory` PowerShell parameters.
 
+The anchor marker is enabled by the `SSC_ENABLE_DEBUG_ANCHOR` CMake option, which defaults to `ON`. Configure with `-DSSC_ENABLE_DEBUG_ANCHOR=OFF` when a marker-free build is needed.
+
 Install `dist/SKSE/Plugins/SexlabSceneCamera.dll` under `Data/SKSE/Plugins`. The matching log is written to the normal SKSE log directory as `SexlabSceneCamera.log`.
 
 ## POC validation
 
 1. Start the game with SexLab P+, SmoothCam, and this DLL enabled.
 2. Start a SexLab scene containing the player.
-3. Confirm `SexlabSceneCamera.log` records one fixed scene-anchor position and forward direction.
-4. End the scene and confirm normal SmoothCam control remains unchanged.
-5. Start an NPC-only scene and confirm no anchor is captured.
-6. During an active scene, try a free/photo camera and confirm this plugin does not overwrite it.
-7. Inspect `SexlabSceneCamera.log` for event order, scene keys, anchor capture, and restoration.
+3. Confirm a direction arrow appears at the fixed scene anchor and `SexlabSceneCamera.log` records its position and forward direction.
+4. Change the animation with the P+ hotkey and confirm the log schedules a recapture, then the marker moves to the newly fixed anchor after about one second.
+5. End the scene and confirm the marker disappears and normal SmoothCam control remains unchanged.
+6. While the marker is visible, save and reload once; confirm the old marker is not persisted or duplicated after the lifecycle reset.
+7. Start an NPC-only scene and confirm no anchor is captured.
+8. During an active scene, try a free/photo camera and confirm this plugin does not overwrite it.
+9. Inspect `SexlabSceneCamera.log` for event order, scene keys, anchor capture, and restoration.
 
 The compiled DLL proves only that the native interfaces and code agree at build time. The event payload, camera-node behavior, and restoration sequence still require the in-game validation above.

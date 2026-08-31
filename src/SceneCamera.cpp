@@ -5,8 +5,14 @@ namespace ssc
     namespace
     {
         constexpr auto kMaximumSceneDuration = std::chrono::minutes{ 30 };
+        constexpr auto kAnimationChangeDelay = std::chrono::seconds{ 1 };
 
         [[nodiscard]] core::Vec3 ToCore(const runtime::Vec3& a_value) noexcept
+        {
+            return { a_value.x, a_value.y, a_value.z };
+        }
+
+        [[nodiscard]] runtime::Vec3 ToRuntime(const core::Vec3& a_value) noexcept
         {
             return { a_value.x, a_value.y, a_value.z };
         }
@@ -20,24 +26,18 @@ namespace ssc
 
     void SceneCamera::Configure(
         runtime::ISceneSource& a_sceneSource,
-        runtime::ICameraControl& a_cameraControl) noexcept
+        runtime::ICameraControl& a_cameraControl,
+        runtime::IDebugVisualization& a_debugVisualization) noexcept
     {
         sceneSource_ = std::addressof(a_sceneSource);
         cameraControl_ = std::addressof(a_cameraControl);
-    }
-
-    bool SceneCamera::PrepareStartEvent(runtime::SceneEvent& a_event) const
-    {
-        if (!sceneSource_) {
-            return false;
-        }
-        a_event.participants = sceneSource_->CollectParticipants(a_event.key);
-        return a_event.participants.containsPlayer;
+        debugVisualization_ = std::addressof(a_debugVisualization);
     }
 
     bool SceneCamera::NeedsUpdate() const noexcept
     {
-        return anchorCapturePending_.load(std::memory_order_acquire) ||
+        return sessionActive_.load(std::memory_order_acquire) ||
+               anchorCapturePending_.load(std::memory_order_acquire) ||
                resetRequested_.load(std::memory_order_acquire);
     }
 
@@ -49,6 +49,9 @@ namespace ssc
             break;
         case runtime::SceneEventType::kAnimationStart:
             OnAnimationStart(a_event);
+            break;
+        case runtime::SceneEventType::kAnimationChange:
+            OnAnimationChange(a_event);
             break;
         case runtime::SceneEventType::kAnimationEnding:
             OnAnimationEnding(a_event);
@@ -71,7 +74,7 @@ namespace ssc
             return;
         }
 
-        if (!a_participants.containsPlayer) {
+        if (!a_participants.ContainsPlayer()) {
             logger::info("Ignoring scene {:08X}/{}: player is not a participant",
                 a_key.sourceID, a_key.instanceID);
             return;
@@ -80,8 +83,8 @@ namespace ssc
         static_cast<void>(session_.Prepare(a_key));
         participants_ = a_participants;
         logger::info("Scene {:08X}/{} prepared with {} participant(s)",
-            a_key.sourceID, a_key.instanceID, participants_.count);
-        if (participants_.truncated) {
+            a_key.sourceID, a_key.instanceID, participants_.Count());
+        if (participants_.WasTruncated()) {
             logger::warn("Scene participant list exceeded {}; extra actors were ignored",
                 runtime::SceneParticipantSnapshot::kCapacity);
         }
@@ -106,18 +109,41 @@ namespace ssc
             return;
         }
 
-        if (!a_event.participants.containsPlayer) {
+        if (!a_event.participants.ContainsPlayer()) {
             logger::warn("Prepared scene no longer contains the player; abandoning camera switch");
             Clear();
             return;
         }
         participants_ = a_event.participants;
 
-        static_cast<void>(session_.Activate(a_event.key));
+        if (!session_.Activate(a_event.key)) {
+            return;
+        }
+        sessionActive_.store(true, std::memory_order_release);
+        anchorCaptureReadyAt_ = std::chrono::steady_clock::now();
         anchorCapturePending_.store(true, std::memory_order_release);
-        activeSince_ = std::chrono::steady_clock::now();
+        activeSince_ = anchorCaptureReadyAt_;
         logger::info("Scene anchor capture pending for {:08X}/{}",
             a_event.key.sourceID, a_event.key.instanceID);
+    }
+
+    void SceneCamera::OnAnimationChange(const runtime::SceneEvent& a_event)
+    {
+        ApplyRequestedReset();
+        logger::info("AnimationChange {:08X}/{}", a_event.key.sourceID, a_event.key.instanceID);
+
+        if (!session_.IsActive() || !session_.Matches(a_event.key)) {
+            logger::info("Ignoring stale AnimationChange {:08X}/{}",
+                a_event.key.sourceID, a_event.key.instanceID);
+            return;
+        }
+
+        anchorCaptureReadyAt_ = std::chrono::steady_clock::now() + kAnimationChangeDelay;
+        anchorCapturePending_.store(true, std::memory_order_release);
+        logger::info("Scene anchor recapture scheduled in {} ms for {:08X}/{}",
+            std::chrono::duration_cast<std::chrono::milliseconds>(kAnimationChangeDelay).count(),
+            a_event.key.sourceID,
+            a_event.key.instanceID);
     }
 
     void SceneCamera::OnAnimationEnding(const runtime::SceneEvent& a_event)
@@ -147,11 +173,18 @@ namespace ssc
         if (!session_.IsActive()) {
             return;
         }
-        if (std::chrono::steady_clock::now() - activeSince_ > kMaximumSceneDuration) {
+        if (debugVisualization_) {
+            debugVisualization_->Update();
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (now - activeSince_ > kMaximumSceneDuration) {
             Restore("scene watchdog timeout"sv);
             return;
         }
         if (!anchorCapturePending_.load(std::memory_order_acquire)) {
+            return;
+        }
+        if (now < anchorCaptureReadyAt_) {
             return;
         }
 
@@ -184,6 +217,11 @@ namespace ssc
         }
 
         anchorCapturePending_.store(false, std::memory_order_release);
+        anchorCaptureReadyAt_ = {};
+        if (debugVisualization_ && !debugVisualization_->ShowAnchor(
+                ToRuntime(anchor_->position), ToRuntime(anchor_->forward))) {
+            logger::warn("Scene anchor debug marker could not be displayed");
+        }
         logger::info(
             "Scene anchor fixed at ({:.2f}, {:.2f}, {:.2f}), forward ({:.3f}, {:.3f}, {:.3f})",
             anchor_->position.x,
@@ -222,9 +260,6 @@ namespace ssc
     void SceneCamera::RequestReset() noexcept
     {
         resetRequested_.store(true, std::memory_order_release);
-        if (cameraControl_) {
-            static_cast<void>(cameraControl_->EmergencyRelease());
-        }
     }
 
     void SceneCamera::EmergencyReset() noexcept
@@ -251,8 +286,13 @@ namespace ssc
 
     void SceneCamera::Clear() noexcept
     {
+        sessionActive_.store(false, std::memory_order_release);
         participants_ = {};
         anchorCapturePending_.store(false, std::memory_order_release);
+        anchorCaptureReadyAt_ = {};
+        if (debugVisualization_) {
+            debugVisualization_->HideAnchor();
+        }
         anchor_.reset();
         session_.Clear();
     }

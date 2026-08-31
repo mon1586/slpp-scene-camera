@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <string_view>
 
 namespace
@@ -94,6 +95,21 @@ int main()
     passed &= Check(degenerateAnchor.has_value(), "degenerate multi-person layout uses fallback");
     if (degenerateAnchor) {
         passed &= CheckNear(degenerateAnchor->forward.x, -1.0F, "degenerate fallback reverses player forward");
+    }
+
+    const auto maximum = std::numeric_limits<float>::max();
+    const std::array<Vec3, 2> extremeParticipants{{
+        { maximum, maximum, maximum },
+        { maximum, maximum, maximum },
+    }};
+    const auto extremeAnchor = anchorCalculator.Evaluate({
+        extremeParticipants,
+        extremeParticipants.front(),
+        Vec3{ 0.0F, 1.0F, 0.0F },
+    });
+    passed &= Check(extremeAnchor.has_value(), "finite extreme coordinates do not overflow the average");
+    if (extremeAnchor) {
+        passed &= Check(std::isfinite(extremeAnchor->position.x), "extreme anchor position remains finite");
     }
 
     return passed ? 0 : 1;

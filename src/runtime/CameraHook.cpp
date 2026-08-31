@@ -42,9 +42,12 @@ namespace ssc::runtime
         };
     }
 
-    void CameraHook::Configure(IRuntimeClient& a_client) noexcept
+    void CameraHook::Configure(
+        IRuntimeClient& a_client,
+        ISceneSource& a_sceneSource) noexcept
     {
         client_ = std::addressof(a_client);
+        sceneSource_ = std::addressof(a_sceneSource);
     }
 
     bool CameraHook::IsInstalled() noexcept
@@ -76,16 +79,23 @@ namespace ssc::runtime
                 const auto isStartEvent = a_event.type == SceneEventType::kAnimationStarting ||
                                           a_event.type == SceneEventType::kAnimationStart;
                 auto preparedEvent = a_event;
-                const auto eligible = !isStartEvent || client->PrepareStartEvent(preparedEvent);
+                if (isStartEvent) {
+                    auto* sceneSource = sceneSource_;
+                    if (!sceneSource) {
+                        logger::error("Ignoring scene start: scene source is unavailable");
+                        return;
+                    }
+                    preparedEvent.participants = sceneSource->CollectParticipants(preparedEvent.key);
+                }
                 if (!IsInstalled()) {
-                    if (!isStartEvent || !eligible) {
+                    if (!isStartEvent) {
                         return;
                     }
                     if (!InstallOrRefresh()) {
                         logger::error("Ignoring scene: camera-state update hook is unavailable");
                         return;
                     }
-                } else if (isStartEvent && eligible) {
+                } else if (isStartEvent) {
                     if (!InstallOrRefresh()) {
                         logger::warn("Camera-state hook refresh was incomplete; existing hooks remain active");
                     }
@@ -108,7 +118,9 @@ namespace ssc::runtime
 
     void CameraHook::QueueRefresh()
     {
-        if (!IsInstalled() || refreshQueued_.exchange(true, std::memory_order_acq_rel)) {
+        if (!IsInstalled() ||
+            refreshDisabled_.load(std::memory_order_acquire) ||
+            refreshQueued_.exchange(true, std::memory_order_acq_rel)) {
             return;
         }
 
@@ -138,6 +150,9 @@ namespace ssc::runtime
     bool CameraHook::InstallOrRefresh()
     {
         std::scoped_lock lock{ installMutex_ };
+        if (refreshDisabled_.load(std::memory_order_acquire)) {
+            return IsInstalled();
+        }
 
         auto* camera = RE::PlayerCamera::GetSingleton();
         if (!camera) {
@@ -182,8 +197,10 @@ namespace ssc::runtime
         if (candidateCount == 0) {
             return IsInstalled();
         }
-        if (nextIndex_ + candidateCount > kMaxHookedVtables) {
-            logger::error("Cannot hook camera-state updates: vtable capacity exhausted");
+        if (candidateCount > kMaxHookedVtables - nextIndex_) {
+            refreshDisabled_.store(true, std::memory_order_release);
+            logger::error(
+                "Cannot extend camera-state hook chain: capacity exhausted; further refreshes are disabled");
             return false;
         }
 
@@ -225,8 +242,9 @@ namespace ssc::runtime
                 }
 
                 nextIndex_ = firstIndex + patchedCount;
+                refreshDisabled_.store(true, std::memory_order_release);
                 if (rollbackComplete) {
-                    logger::warn("Camera-state hook batch was rolled back; {} published chain slot(s) remain reserved",
+                    logger::warn("Camera-state hook batch was rolled back; {} published chain slot(s) remain reserved and further refreshes are disabled",
                         patchedCount);
                 } else {
                     installed_.store(true, std::memory_order_release);

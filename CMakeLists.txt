@@ -19,6 +19,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 
 option(SSC_BUILD_TESTS "Build unit tests" ON)
+option(SSC_ENABLE_DEBUG_ANCHOR "Show a direction arrow at the scene anchor" ON)
 
 # The POC uses a vtable hook and does not allocate a trampoline. Keep CommonLib's
 # own tests and patch-safety-only dependency out of this consumer build.
@@ -45,9 +46,13 @@ set(SSC_SOURCES
     src/runtime/CameraOutput.cpp
     src/runtime/CameraOutput.h
     src/runtime/ICameraControl.h
+    src/runtime/IDebugVisualization.h
     src/runtime/IRuntimeClient.h
     src/runtime/ISceneSource.h
+    src/runtime/PluginRuntime.cpp
+    src/runtime/PluginRuntime.h
     src/runtime/SceneEvent.h
+    src/runtime/SceneParticipantSnapshotStorage.h
     src/runtime/SceneEventMailbox.cpp
     src/runtime/SceneEventMailbox.h
     src/runtime/SceneKey.h
@@ -56,6 +61,8 @@ set(SSC_SOURCES
     src/runtime/SexLabPSceneSource.h
     src/runtime/SmoothCamCameraControl.cpp
     src/runtime/SmoothCamCameraControl.h
+    src/runtime/WorldDebugVisualization.cpp
+    src/runtime/WorldDebugVisualization.h
     src/main.cpp
     src/pch.h
 )
@@ -82,6 +89,10 @@ target_compile_definitions(
         WIN32_LEAN_AND_MEAN
         NOMINMAX
 )
+
+if(SSC_ENABLE_DEBUG_ANCHOR)
+    target_compile_definitions(SexlabSceneCamera PRIVATE SSC_ENABLE_DEBUG_ANCHOR=1)
+endif()
 
 target_precompile_headers(SexlabSceneCamera PRIVATE src/pch.h)
 

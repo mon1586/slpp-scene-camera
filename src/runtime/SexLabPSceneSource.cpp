@@ -1,4 +1,5 @@
 #include "runtime/SexLabPSceneSource.h"
+#include "runtime/SceneParticipantSnapshotStorage.h"
 
 namespace ssc::runtime
 {
@@ -25,6 +26,9 @@ namespace ssc::runtime
             if (a_name == "AnimationStart"sv) {
                 return SceneEventType::kAnimationStart;
             }
+            if (a_name == "AnimationChange"sv) {
+                return SceneEventType::kAnimationChange;
+            }
             if (a_name == "AnimationEnding"sv) {
                 return SceneEventType::kAnimationEnding;
             }
@@ -33,6 +37,9 @@ namespace ssc::runtime
             }
             if (a_name == "HookAnimationStart"sv) {
                 return SceneEventType::kAnimationStart;
+            }
+            if (a_name == "HookAnimationChange"sv) {
+                return SceneEventType::kAnimationChange;
             }
             if (a_name == "HookAnimationEnd"sv) {
                 return SceneEventType::kAnimationEnd;
@@ -114,6 +121,8 @@ namespace ssc::runtime
         const SceneKey& a_key) const
     {
         SceneParticipantSnapshot result;
+        auto storage = std::make_shared<SceneParticipantSnapshot::Storage>();
+        result.storage_ = storage;
         auto* quest = RE::TESForm::LookupByID<RE::TESQuest>(a_key.sourceID);
         if (!quest) {
             logger::warn("SexLab scene source {:08X} is not a live quest", a_key.sourceID);
@@ -137,25 +146,25 @@ namespace ssc::runtime
 
             const auto isPlayer = actor == player;
             bool duplicate = false;
-            for (std::size_t index = 0; index < result.count; ++index) {
-                if (result.handles[index].native_handle() == handle.native_handle()) {
+            for (std::size_t index = 0; index < result.count_; ++index) {
+                if (storage->handles[index].native_handle() == handle.native_handle()) {
                     duplicate = true;
                     break;
                 }
             }
             if (duplicate) {
-                result.containsPlayer = result.containsPlayer || isPlayer;
+                result.containsPlayer_ = result.containsPlayer_ || isPlayer;
                 continue;
             }
 
-            if (result.count < result.handles.size()) {
-                result.handles[result.count++] = handle;
-                result.containsPlayer = result.containsPlayer || isPlayer;
+            if (result.count_ < storage->handles.size()) {
+                storage->handles[result.count_++] = handle;
+                result.containsPlayer_ = result.containsPlayer_ || isPlayer;
             } else {
-                result.truncated = true;
-                if (isPlayer && !result.containsPlayer) {
-                    result.handles.back() = handle;
-                    result.containsPlayer = true;
+                result.truncated_ = true;
+                if (isPlayer && !result.containsPlayer_) {
+                    storage->handles.back() = handle;
+                    result.containsPlayer_ = true;
                 }
             }
         }
@@ -167,7 +176,9 @@ namespace ssc::runtime
         const SceneParticipantSnapshot& a_participants,
         std::span<Vec3> a_pelvisStorage) const
     {
-        if (a_participants.count == 0 || a_participants.count > a_pelvisStorage.size()) {
+        if (!a_participants.storage_ ||
+            a_participants.count_ == 0 ||
+            a_participants.count_ > a_pelvisStorage.size()) {
             return std::nullopt;
         }
 
@@ -177,8 +188,8 @@ namespace ssc::runtime
         }
 
         std::optional<Vec3> playerPelvis;
-        for (std::size_t index = 0; index < a_participants.count; ++index) {
-            const auto actor = a_participants.handles[index].get();
+        for (std::size_t index = 0; index < a_participants.count_; ++index) {
+            const auto actor = a_participants.storage_->handles[index].get();
             auto* root = actor ? actor->Get3D() : nullptr;
             auto* pelvis = root ? root->GetObjectByName(kPelvisNodeName) : nullptr;
             if (!pelvis) {
@@ -198,7 +209,7 @@ namespace ssc::runtime
         }
 
         return SceneAnchorSamples{
-            std::span<const Vec3>{ a_pelvisStorage.data(), a_participants.count },
+            std::span<const Vec3>{ a_pelvisStorage.data(), a_participants.count_ },
             playerPelvis,
             ForwardFromYaw(player->GetAngleZ()),
         };

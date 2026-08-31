@@ -1,5 +1,6 @@
 #pragma once
 
+#include "runtime/ISceneSource.h"
 #include "runtime/SceneEventMailbox.h"
 
 namespace ssc::runtime
@@ -7,7 +8,7 @@ namespace ssc::runtime
     class CameraHook
     {
     public:
-        static void Configure(IRuntimeClient& a_client) noexcept;
+        static void Configure(IRuntimeClient& a_client, ISceneSource& a_sceneSource) noexcept;
         [[nodiscard]] static IRuntimeClient* GetClient() noexcept { return client_; }
         [[nodiscard]] static bool IsInstalled() noexcept;
         static void SubmitEvent(SceneEvent a_event);
@@ -44,7 +45,9 @@ namespace ssc::runtime
         static inline std::size_t nextIndex_{ 0 };
         static inline std::atomic_bool installed_{ false };
         static inline std::atomic_bool refreshQueued_{ false };
+        static inline std::atomic_bool refreshDisabled_{ false };
         static inline IRuntimeClient* client_{ nullptr };
+        static inline ISceneSource* sceneSource_{ nullptr };
         static inline bool cameraEventSinkRegistered_{ false };
         static inline std::mutex installMutex_;
         static inline thread_local std::size_t thunkDepth_{ 0 };

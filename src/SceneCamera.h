@@ -1,6 +1,7 @@
 #pragma once
 
 #include "runtime/ICameraControl.h"
+#include "runtime/IDebugVisualization.h"
 #include "runtime/IRuntimeClient.h"
 #include "runtime/ISceneSource.h"
 #include "SceneSession.h"
@@ -15,16 +16,11 @@ namespace ssc
 
         void Configure(
             runtime::ISceneSource& a_sceneSource,
-            runtime::ICameraControl& a_cameraControl) noexcept;
+            runtime::ICameraControl& a_cameraControl,
+            runtime::IDebugVisualization& a_debugVisualization) noexcept;
 
-        [[nodiscard]] bool PrepareStartEvent(runtime::SceneEvent& a_event) const override;
         [[nodiscard]] bool NeedsUpdate() const noexcept override;
         void HandleSceneEvent(const runtime::SceneEvent& a_event) override;
-
-        void OnAnimationStarting(const runtime::SceneEvent& a_event);
-        void OnAnimationStart(const runtime::SceneEvent& a_event);
-        void OnAnimationEnding(const runtime::SceneEvent& a_event);
-        void OnAnimationEnd(const runtime::SceneEvent& a_event);
 
         void Update() override;
         void Reset(std::string_view a_reason) override;
@@ -32,6 +28,11 @@ namespace ssc
         void EmergencyReset() noexcept override;
 
     private:
+        void OnAnimationStarting(const runtime::SceneEvent& a_event);
+        void OnAnimationStart(const runtime::SceneEvent& a_event);
+        void OnAnimationChange(const runtime::SceneEvent& a_event);
+        void OnAnimationEnding(const runtime::SceneEvent& a_event);
+        void OnAnimationEnd(const runtime::SceneEvent& a_event);
         void Prepare(
             const runtime::SceneKey& a_key,
             const runtime::SceneParticipantSnapshot& a_participants);
@@ -41,10 +42,13 @@ namespace ssc
 
         runtime::ISceneSource* sceneSource_{ nullptr };
         runtime::ICameraControl* cameraControl_{ nullptr };
+        runtime::IDebugVisualization* debugVisualization_{ nullptr };
         SceneSession session_;
         runtime::SceneParticipantSnapshot participants_;
         std::chrono::steady_clock::time_point activeSince_{};
+        std::chrono::steady_clock::time_point anchorCaptureReadyAt_{};
         std::atomic_bool resetRequested_{ false };
+        std::atomic_bool sessionActive_{ false };
         std::atomic_bool anchorCapturePending_{ false };
         std::optional<core::SceneAnchor> anchor_;
         core::SceneAnchorCalculator anchorCalculator_;

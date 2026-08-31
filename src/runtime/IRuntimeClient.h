@@ -9,7 +9,6 @@ namespace ssc::runtime
     public:
         virtual ~IRuntimeClient() = default;
 
-        [[nodiscard]] virtual bool PrepareStartEvent(SceneEvent& a_event) const = 0;
         [[nodiscard]] virtual bool NeedsUpdate() const noexcept = 0;
         virtual void HandleSceneEvent(const SceneEvent& a_event) = 0;
         virtual void Update() = 0;

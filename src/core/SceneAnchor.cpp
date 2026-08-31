@@ -35,21 +35,28 @@ namespace ssc::core
             return std::nullopt;
         }
 
-        Vec3 position{};
+        double sumX = 0.0;
+        double sumY = 0.0;
+        double sumZ = 0.0;
         for (const auto& pelvis : a_input.participantPelvisPositions) {
             if (!IsFinite(pelvis)) {
                 return std::nullopt;
             }
-            position.x += pelvis.x;
-            position.y += pelvis.y;
-            position.z += pelvis.z;
+            sumX += static_cast<double>(pelvis.x);
+            sumY += static_cast<double>(pelvis.y);
+            sumZ += static_cast<double>(pelvis.z);
         }
 
         const auto inverseParticipantCount =
-            1.0F / static_cast<float>(a_input.participantPelvisPositions.size());
-        position.x *= inverseParticipantCount;
-        position.y *= inverseParticipantCount;
-        position.z *= inverseParticipantCount;
+            1.0 / static_cast<double>(a_input.participantPelvisPositions.size());
+        const Vec3 position{
+            static_cast<float>(sumX * inverseParticipantCount),
+            static_cast<float>(sumY * inverseParticipantCount),
+            static_cast<float>(sumZ * inverseParticipantCount),
+        };
+        if (!IsFinite(position)) {
+            return std::nullopt;
+        }
 
         if (a_input.participantPelvisPositions.size() > 1) {
             if (const auto forward = NormalizeHorizontal({
