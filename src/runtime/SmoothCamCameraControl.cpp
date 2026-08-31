@@ -1,6 +1,6 @@
-#include "controller/SmoothCamCameraController.h"
+#include "runtime/SmoothCamCameraControl.h"
 
-namespace ssc::controller
+namespace ssc::runtime
 {
     namespace
     {
@@ -26,13 +26,13 @@ namespace ssc::controller
         }
     }
 
-    SmoothCamCameraController* SmoothCamCameraController::GetSingleton() noexcept
+    SmoothCamCameraControl* SmoothCamCameraControl::GetSingleton() noexcept
     {
-        static SmoothCamCameraController singleton;
+        static SmoothCamCameraControl singleton;
         return std::addressof(singleton);
     }
 
-    bool SmoothCamCameraController::RegisterAPIListener(
+    bool SmoothCamCameraControl::RegisterAPIListener(
         const SKSE::MessagingInterface* a_messaging)
     {
         if (!a_messaging) {
@@ -55,7 +55,7 @@ namespace ssc::controller
         return registered;
     }
 
-    bool SmoothCamCameraController::RequestAPI(const SKSE::MessagingInterface* a_messaging)
+    bool SmoothCamCameraControl::RequestAPI(const SKSE::MessagingInterface* a_messaging)
     {
         if (!a_messaging) {
             logger::error("Cannot request SmoothCam API: messaging interface is unavailable");
@@ -67,7 +67,7 @@ namespace ssc::controller
         return requested;
     }
 
-    void SmoothCamCameraController::SetInterface(
+    void SmoothCamCameraControl::SetInterface(
         void* a_interface,
         SmoothCamAPI::InterfaceVersion a_version)
     {
@@ -83,13 +83,13 @@ namespace ssc::controller
         logger::info("SmoothCam API connected (V{}, enum value {})", rawVersion + 1, rawVersion);
     }
 
-    bool SmoothCamCameraController::CanAcquire() const noexcept
+    bool SmoothCamCameraControl::CanAcquire() const noexcept
     {
         const auto* api = api_.load(std::memory_order_acquire);
         return api && api->IsCameraEnabled();
     }
 
-    bool SmoothCamCameraController::Acquire()
+    bool SmoothCamCameraControl::Acquire()
     {
         auto* api = api_.load(std::memory_order_acquire);
         if (!api) {
@@ -126,7 +126,7 @@ namespace ssc::controller
         return false;
     }
 
-    bool SmoothCamCameraController::StillOwnsCamera() const noexcept
+    bool SmoothCamCameraControl::StillOwnsCamera() const noexcept
     {
         if (!ownsCamera_.load(std::memory_order_acquire)) {
             return false;
@@ -136,19 +136,17 @@ namespace ssc::controller
         return api && api->GetCameraOwner() == SKSE::GetPluginHandle();
     }
 
-    bool SmoothCamCameraController::OwnsCamera() const noexcept
+    bool SmoothCamCameraControl::OwnsCamera() const noexcept
     {
         return ownsCamera_.load(std::memory_order_acquire);
     }
 
-    CameraApplyResult SmoothCamCameraController::Apply(
-        RE::PlayerCamera* a_camera,
-        const core::CameraPose& a_pose)
+    CameraApplyResult SmoothCamCameraControl::Apply(const CameraPose& a_pose)
     {
-        return output_.Apply(a_camera, a_pose);
+        return output_.Apply(a_pose);
     }
 
-    void SmoothCamCameraController::Release(const RE::Actor* a_player)
+    void SmoothCamCameraControl::Release()
     {
         if (!ownsCamera_.load(std::memory_order_acquire)) {
             return;
@@ -168,7 +166,8 @@ namespace ssc::controller
             return;
         }
 
-        const auto goalResult = api->SendToGoalPosition(pluginHandle, true, false, a_player);
+        const auto goalResult = api->SendToGoalPosition(
+            pluginHandle, true, false, RE::PlayerCharacter::GetSingleton());
         logger::info("SmoothCam SendToGoalPosition(true) -> {}", ResultName(goalResult));
 
         const auto releaseResult = api->ReleaseCameraControl(pluginHandle);
@@ -176,7 +175,7 @@ namespace ssc::controller
         ownsCamera_.store(false, std::memory_order_release);
     }
 
-    bool SmoothCamCameraController::EmergencyRelease() noexcept
+    bool SmoothCamCameraControl::EmergencyRelease() noexcept
     {
         if (!ownsCamera_.load(std::memory_order_acquire)) {
             return true;

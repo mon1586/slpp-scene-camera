@@ -1,10 +1,10 @@
 #pragma once
 
-#include "controller/SceneKey.h"
+#include "runtime/SceneKey.h"
 
 #include <optional>
 
-namespace ssc::controller
+namespace ssc
 {
     class SceneSession
     {
@@ -21,12 +21,12 @@ namespace ssc::controller
         [[nodiscard]] bool IsIdle() const noexcept { return state_ == State::kIdle; }
         [[nodiscard]] bool IsPreparing() const noexcept { return state_ == State::kPreparing; }
         [[nodiscard]] bool IsActive() const noexcept { return state_ == State::kActive; }
-        [[nodiscard]] bool Matches(const SceneKey& a_key) const noexcept
+        [[nodiscard]] bool Matches(const runtime::SceneKey& a_key) const noexcept
         {
             return key_.has_value() && *key_ == a_key;
         }
 
-        [[nodiscard]] bool Prepare(const SceneKey& a_key) noexcept
+        [[nodiscard]] bool Prepare(const runtime::SceneKey& a_key) noexcept
         {
             if (IsActive()) {
                 return false;
@@ -36,7 +36,7 @@ namespace ssc::controller
             return true;
         }
 
-        [[nodiscard]] bool Activate(const SceneKey& a_key) noexcept
+        [[nodiscard]] bool Activate(const runtime::SceneKey& a_key) noexcept
         {
             if (!IsPreparing() || !Matches(a_key)) {
                 return false;
@@ -60,6 +60,6 @@ namespace ssc::controller
 
     private:
         State state_{ State::kIdle };
-        std::optional<SceneKey> key_;
+        std::optional<runtime::SceneKey> key_;
     };
 }

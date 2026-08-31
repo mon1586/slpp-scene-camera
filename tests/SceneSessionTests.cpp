@@ -1,5 +1,7 @@
-#include "controller/SceneSession.h"
+#include "SceneSession.h"
+#include "core/SceneAnchor.h"
 
+#include <cmath>
 #include <iostream>
 #include <string_view>
 
@@ -12,12 +14,17 @@ namespace
         }
         return a_condition;
     }
+
+    bool CheckNear(float a_actual, float a_expected, std::string_view a_message)
+    {
+        return Check(std::abs(a_actual - a_expected) < 0.0001F, a_message);
+    }
 }
 
 int main()
 {
-    using ssc::controller::SceneKey;
-    using ssc::controller::SceneSession;
+    using ssc::SceneSession;
+    using ssc::runtime::SceneKey;
 
     const SceneKey first{ 0x01001234, 7 };
     const SceneKey second{ 0x02005678, 8 };
@@ -45,6 +52,49 @@ int main()
     passed &= Check(session.IsIdle(), "clear returns the session to Idle");
     passed &= Check(!session.Matches(first), "clear removes the old scene key");
     passed &= Check(session.Prepare(second), "a new scene can prepare after clear");
+
+    using ssc::core::SceneAnchorCalculator;
+    using ssc::core::Vec3;
+    SceneAnchorCalculator anchorCalculator;
+
+    const std::array<Vec3, 2> twoParticipants{{ { 0.0F, 0.0F, 10.0F }, { 10.0F, 0.0F, 20.0F } }};
+    const auto twoPersonAnchor = anchorCalculator.Evaluate({
+        twoParticipants,
+        Vec3{ 0.0F, 0.0F, 10.0F },
+        Vec3{ 0.0F, 1.0F, 0.0F },
+    });
+    passed &= Check(twoPersonAnchor.has_value(), "two participants produce an anchor");
+    if (twoPersonAnchor) {
+        passed &= CheckNear(twoPersonAnchor->position.x, 5.0F, "anchor averages Pelvis X");
+        passed &= CheckNear(twoPersonAnchor->position.y, 0.0F, "anchor averages Pelvis Y");
+        passed &= CheckNear(twoPersonAnchor->position.z, 15.0F, "anchor averages Pelvis Z");
+        passed &= CheckNear(twoPersonAnchor->forward.x, -1.0F, "multi-person forward points from anchor to player");
+        passed &= CheckNear(twoPersonAnchor->forward.y, 0.0F, "multi-person forward is horizontal");
+    }
+
+    const std::array<Vec3, 1> oneParticipant{{ { 4.0F, 5.0F, 6.0F } }};
+    const auto onePersonAnchor = anchorCalculator.Evaluate({
+        oneParticipant,
+        oneParticipant.front(),
+        Vec3{ 0.0F, 3.0F, 7.0F },
+    });
+    passed &= Check(onePersonAnchor.has_value(), "one participant uses player-forward fallback");
+    if (onePersonAnchor) {
+        passed &= CheckNear(onePersonAnchor->forward.x, 0.0F, "one-person fallback removes X drift");
+        passed &= CheckNear(onePersonAnchor->forward.y, -1.0F, "one-person fallback reverses player forward");
+        passed &= CheckNear(onePersonAnchor->forward.z, 0.0F, "one-person fallback removes vertical forward");
+    }
+
+    const std::array<Vec3, 2> degenerateParticipants{{ { 3.0F, 4.0F, 1.0F }, { 3.0F, 4.0F, 9.0F } }};
+    const auto degenerateAnchor = anchorCalculator.Evaluate({
+        degenerateParticipants,
+        Vec3{ 3.0F, 4.0F, 2.0F },
+        Vec3{ 1.0F, 0.0F, 0.0F },
+    });
+    passed &= Check(degenerateAnchor.has_value(), "degenerate multi-person layout uses fallback");
+    if (degenerateAnchor) {
+        passed &= CheckNear(degenerateAnchor->forward.x, -1.0F, "degenerate fallback reverses player forward");
+    }
 
     return passed ? 0 : 1;
 }

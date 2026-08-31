@@ -1,10 +1,8 @@
-#include "controller/SceneEventMailbox.h"
-
-#include "controller/SceneCameraCoordinator.h"
+#include "runtime/SceneEventMailbox.h"
 
 #include <REX/W32/KERNEL32.h>
 
-namespace ssc::controller
+namespace ssc::runtime
 {
     SceneEventMailbox* SceneEventMailbox::GetSingleton() noexcept
     {
@@ -61,7 +59,7 @@ namespace ssc::controller
         return true;
     }
 
-    void SceneEventMailbox::DispatchPending()
+    void SceneEventMailbox::DispatchPending(IRuntimeClient& a_client)
     {
         if (!HasPending()) {
             return;
@@ -88,9 +86,8 @@ namespace ssc::controller
             hasPending_.store(false, std::memory_order_release);
         }
 
-        auto* coordinator = SceneCameraCoordinator::GetSingleton();
         if (emergencyReset) {
-            coordinator->Reset("scene event mailbox overflow"sv);
+            a_client.Reset("scene event mailbox overflow"sv);
             return;
         }
 
@@ -100,20 +97,7 @@ namespace ssc::controller
                 continue;
             }
             const auto& event = queuedEvent.event;
-            switch (event.type) {
-            case SceneEventType::kAnimationStarting:
-                coordinator->OnAnimationStarting(event);
-                break;
-            case SceneEventType::kAnimationStart:
-                coordinator->OnAnimationStart(event);
-                break;
-            case SceneEventType::kAnimationEnding:
-                coordinator->OnAnimationEnding(event);
-                break;
-            case SceneEventType::kAnimationEnd:
-                coordinator->OnAnimationEnd(event);
-                break;
-            }
+            a_client.HandleSceneEvent(event);
         }
     }
 }

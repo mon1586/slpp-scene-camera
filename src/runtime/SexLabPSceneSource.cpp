@@ -1,9 +1,22 @@
-#include "controller/SexLabPSceneController.h"
+#include "runtime/SexLabPSceneSource.h"
 
-namespace ssc::controller
+namespace ssc::runtime
 {
     namespace
     {
+        const RE::BSFixedString kPelvisNodeName{ "NPC Pelvis [Pelv]" };
+
+        [[nodiscard]] Vec3 ToRuntime(const RE::NiPoint3& a_point) noexcept
+        {
+            return { a_point.x, a_point.y, a_point.z };
+        }
+
+        [[nodiscard]] Vec3 ForwardFromYaw(float a_yaw) noexcept
+        {
+            // Skyrim actors use +Y as their zero-yaw forward direction.
+            return { std::sin(a_yaw), std::cos(a_yaw), 0.0F };
+        }
+
         [[nodiscard]] std::optional<SceneEventType> ParseEvent(std::string_view a_name) noexcept
         {
             if (a_name == "AnimationStarting"sv) {
@@ -62,16 +75,16 @@ namespace ssc::controller
         }
     }
 
-    SexLabPSceneController* SexLabPSceneController::GetSingleton() noexcept
+    SexLabPSceneSource* SexLabPSceneSource::GetSingleton() noexcept
     {
-        static SexLabPSceneController singleton;
+        static SexLabPSceneSource singleton;
         return std::addressof(singleton);
     }
 
-    bool SexLabPSceneController::Register(SceneEventHandler a_handler)
+    bool SexLabPSceneSource::Register(SceneEventHandler a_handler)
     {
         if (!a_handler) {
-            logger::error("Cannot register SexLab P+ scene controller without an event handler");
+            logger::error("Cannot register SexLab P+ scene source without an event handler");
             return false;
         }
         if (registered_) {
@@ -80,7 +93,7 @@ namespace ssc::controller
 
         auto* dataHandler = RE::TESDataHandler::GetSingleton();
         if (!dataHandler || !dataHandler->LookupModByName("SexLab.esm"sv)) {
-            logger::warn("SexLab.esm is not loaded; scene controller will not be registered");
+            logger::warn("SexLab.esm is not loaded; scene source will not be registered");
             return false;
         }
 
@@ -93,11 +106,11 @@ namespace ssc::controller
         handler_ = a_handler;
         source->AddEventSink(this);
         registered_ = true;
-        logger::info("SexLab P+ scene controller registered");
+        logger::info("SexLab P+ scene source registered");
         return true;
     }
 
-    SceneParticipantSnapshot SexLabPSceneController::CollectParticipants(
+    SceneParticipantSnapshot SexLabPSceneSource::CollectParticipants(
         const SceneKey& a_key) const
     {
         SceneParticipantSnapshot result;
@@ -150,7 +163,48 @@ namespace ssc::controller
         return result;
     }
 
-    RE::BSEventNotifyControl SexLabPSceneController::ProcessEvent(
+    std::optional<SceneAnchorSamples> SexLabPSceneSource::CollectAnchorInput(
+        const SceneParticipantSnapshot& a_participants,
+        std::span<Vec3> a_pelvisStorage) const
+    {
+        if (a_participants.count == 0 || a_participants.count > a_pelvisStorage.size()) {
+            return std::nullopt;
+        }
+
+        const auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player) {
+            return std::nullopt;
+        }
+
+        std::optional<Vec3> playerPelvis;
+        for (std::size_t index = 0; index < a_participants.count; ++index) {
+            const auto actor = a_participants.handles[index].get();
+            auto* root = actor ? actor->Get3D() : nullptr;
+            auto* pelvis = root ? root->GetObjectByName(kPelvisNodeName) : nullptr;
+            if (!pelvis) {
+                logger::debug("Cannot capture scene anchor: participant {} has no Pelvis node", index);
+                return std::nullopt;
+            }
+
+            const auto pelvisPosition = ToRuntime(pelvis->world.translate);
+            a_pelvisStorage[index] = pelvisPosition;
+            if (actor.get() == player) {
+                playerPelvis = pelvisPosition;
+            }
+        }
+
+        if (!playerPelvis) {
+            return std::nullopt;
+        }
+
+        return SceneAnchorSamples{
+            std::span<const Vec3>{ a_pelvisStorage.data(), a_participants.count },
+            playerPelvis,
+            ForwardFromYaw(player->GetAngleZ()),
+        };
+    }
+
+    RE::BSEventNotifyControl SexLabPSceneSource::ProcessEvent(
         const SKSE::ModCallbackEvent* a_event,
         RE::BSTEventSource<SKSE::ModCallbackEvent>*)
     {

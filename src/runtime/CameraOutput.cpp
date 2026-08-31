@@ -1,6 +1,6 @@
-#include "controller/CameraOutput.h"
+#include "runtime/CameraOutput.h"
 
-namespace ssc::controller
+namespace ssc::runtime
 {
     namespace
     {
@@ -16,7 +16,7 @@ namespace ssc::controller
         }
 
         [[nodiscard]] RE::NiMatrix3 ToGameRotation(
-            const core::RotationMatrix& a_rotation) noexcept
+            const RotationMatrix& a_rotation) noexcept
         {
             RE::NiMatrix3 rotation;
             for (std::size_t row = 0; row < 3; ++row) {
@@ -50,39 +50,38 @@ namespace ssc::controller
         return nullptr;
     }
 
-    CameraApplyResult CameraOutput::Apply(
-        RE::PlayerCamera* a_camera,
-        const core::CameraPose& a_pose)
+    CameraApplyResult CameraOutput::Apply(const CameraPose& a_pose)
     {
-        if (!a_camera || !a_camera->currentState) {
+        auto* camera = RE::PlayerCamera::GetSingleton();
+        if (!camera || !camera->currentState) {
             return CameraApplyResult::kMissingCamera;
         }
 
-        const auto stateID = a_camera->currentState->id;
+        const auto stateID = camera->currentState->id;
         if (stateID != RE::CameraState::kThirdPerson && stateID != RE::CameraState::kAnimated) {
             return CameraApplyResult::kUnsupportedState;
         }
 
-        if (!a_camera->cameraRoot) {
+        if (!camera->cameraRoot) {
             return CameraApplyResult::kMissingCamera;
         }
 
-        auto* niCamera = FindNiCamera(a_camera->cameraRoot.get());
+        auto* niCamera = FindNiCamera(camera->cameraRoot.get());
         if (!niCamera) {
             return CameraApplyResult::kMissingCamera;
         }
 
         const RE::NiPoint3 position{ a_pose.position.x, a_pose.position.y, a_pose.position.z };
 
-        a_camera->cameraRoot->local.translate = position;
-        a_camera->cameraRoot->world.translate = position;
+        camera->cameraRoot->local.translate = position;
+        camera->cameraRoot->world.translate = position;
         niCamera->world.translate = position;
 
-        a_camera->cameraRoot->local.rotate = RE::NiMatrix3{};
-        a_camera->cameraRoot->world.rotate = RE::NiMatrix3{};
+        camera->cameraRoot->local.rotate = RE::NiMatrix3{};
+        camera->cameraRoot->world.rotate = RE::NiMatrix3{};
         niCamera->world.rotate = ToGameRotation(a_pose.rotation);
 
-        if (auto* thirdPerson = skyrim_cast<RE::ThirdPersonState*>(a_camera->currentState.get())) {
+        if (auto* thirdPerson = skyrim_cast<RE::ThirdPersonState*>(camera->currentState.get())) {
             thirdPerson->translation = position;
         }
 

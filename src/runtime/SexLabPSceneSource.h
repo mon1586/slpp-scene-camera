@@ -1,19 +1,22 @@
 #pragma once
 
-#include "controller/ISceneController.h"
+#include "runtime/ISceneSource.h"
 
-namespace ssc::controller
+namespace ssc::runtime
 {
-    class SexLabPSceneController final :
-        public ISceneController,
+    class SexLabPSceneSource final :
+        public ISceneSource,
         public RE::BSTEventSink<SKSE::ModCallbackEvent>
     {
     public:
-        static SexLabPSceneController* GetSingleton() noexcept;
+        static SexLabPSceneSource* GetSingleton() noexcept;
 
         [[nodiscard]] bool Register(SceneEventHandler a_handler) override;
         [[nodiscard]] SceneParticipantSnapshot CollectParticipants(
             const SceneKey& a_key) const override;
+        [[nodiscard]] std::optional<SceneAnchorSamples> CollectAnchorInput(
+            const SceneParticipantSnapshot& a_participants,
+            std::span<Vec3> a_pelvisStorage) const override;
 
         RE::BSEventNotifyControl ProcessEvent(
             const SKSE::ModCallbackEvent* a_event,

@@ -1,8 +1,8 @@
 #pragma once
 
-#include "core/CameraTypes.h"
+#include "runtime/RuntimeTypes.h"
 
-namespace ssc::controller
+namespace ssc::runtime
 {
     enum class CameraApplyResult
     {
@@ -11,19 +11,17 @@ namespace ssc::controller
         kMissingCamera,
     };
 
-    class ICameraController
+    class ICameraControl
     {
     public:
-        virtual ~ICameraController() = default;
+        virtual ~ICameraControl() = default;
 
         [[nodiscard]] virtual bool CanAcquire() const noexcept = 0;
         [[nodiscard]] virtual bool Acquire() = 0;
         [[nodiscard]] virtual bool StillOwnsCamera() const noexcept = 0;
         [[nodiscard]] virtual bool OwnsCamera() const noexcept = 0;
-        [[nodiscard]] virtual CameraApplyResult Apply(
-            RE::PlayerCamera* a_camera,
-            const core::CameraPose& a_pose) = 0;
-        virtual void Release(const RE::Actor* a_player) = 0;
+        [[nodiscard]] virtual CameraApplyResult Apply(const CameraPose& a_pose) = 0;
+        virtual void Release() = 0;
         [[nodiscard]] virtual bool EmergencyRelease() noexcept = 0;
     };
 }

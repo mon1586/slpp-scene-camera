@@ -1,8 +1,9 @@
 #pragma once
 
-#include "controller/SceneEvent.h"
+#include "runtime/IRuntimeClient.h"
+#include "runtime/SceneEvent.h"
 
-namespace ssc::controller
+namespace ssc::runtime
 {
     class SceneEventMailbox
     {
@@ -13,7 +14,7 @@ namespace ssc::controller
         void BeginNewGeneration();
         [[nodiscard]] bool HasPending() const noexcept;
         [[nodiscard]] bool Enqueue(SceneEvent a_event, std::uint64_t a_generation);
-        void DispatchPending();
+        void DispatchPending(IRuntimeClient& a_client);
 
     private:
         static constexpr std::size_t kCapacity = 32;

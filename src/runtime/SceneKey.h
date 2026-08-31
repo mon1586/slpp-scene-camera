@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace ssc::controller
+namespace ssc::runtime
 {
     struct SceneKey
     {

@@ -1,8 +1,8 @@
-#include "controller/CameraHook.h"
-#include "controller/SceneCameraCoordinator.h"
-#include "controller/SceneEventMailbox.h"
-#include "controller/SexLabPSceneController.h"
-#include "controller/SmoothCamCameraController.h"
+#include "SceneCamera.h"
+#include "runtime/CameraHook.h"
+#include "runtime/SceneEventMailbox.h"
+#include "runtime/SexLabPSceneSource.h"
+#include "runtime/SmoothCamCameraControl.h"
 
 namespace
 {
@@ -24,10 +24,10 @@ namespace
 
     void QueueLifecycleReset(std::string_view a_reason)
     {
-        auto* mailbox = ssc::controller::SceneEventMailbox::GetSingleton();
+        auto* mailbox = ssc::runtime::SceneEventMailbox::GetSingleton();
         mailbox->BeginNewGeneration();
-        auto* coordinator = ssc::controller::SceneCameraCoordinator::GetSingleton();
-        coordinator->RequestReset();
+        auto* sceneCamera = ssc::SceneCamera::GetSingleton();
+        sceneCamera->RequestReset();
         logger::info("Camera reset requested: {}", a_reason);
     }
 
@@ -42,16 +42,16 @@ namespace
             switch (a_message->type) {
             case SKSE::MessagingInterface::kPostLoad:
                 static_cast<void>(
-                    ssc::controller::SmoothCamCameraController::GetSingleton()->RegisterAPIListener(messaging));
+                    ssc::runtime::SmoothCamCameraControl::GetSingleton()->RegisterAPIListener(messaging));
                 break;
             case SKSE::MessagingInterface::kPostPostLoad:
                 static_cast<void>(
-                    ssc::controller::SmoothCamCameraController::GetSingleton()->RequestAPI(messaging));
+                    ssc::runtime::SmoothCamCameraControl::GetSingleton()->RequestAPI(messaging));
                 break;
             case SKSE::MessagingInterface::kDataLoaded:
-                if (!ssc::controller::SexLabPSceneController::GetSingleton()->Register(
-                        ssc::controller::CameraHook::SubmitEvent)) {
-                    logger::warn("No scene controller was registered");
+                if (!ssc::runtime::SexLabPSceneSource::GetSingleton()->Register(
+                        ssc::runtime::CameraHook::SubmitEvent)) {
+                    logger::warn("No scene source was registered");
                 }
                 break;
             case SKSE::MessagingInterface::kPreLoadGame:
@@ -71,9 +71,9 @@ namespace
                 logger::critical("SKSE message handler failed: {}", exception.what());
             } catch (...) {
             }
-            ssc::controller::SceneCameraCoordinator::GetSingleton()->RequestReset();
+            ssc::SceneCamera::GetSingleton()->RequestReset();
         } catch (...) {
-            ssc::controller::SceneCameraCoordinator::GetSingleton()->RequestReset();
+            ssc::SceneCamera::GetSingleton()->RequestReset();
         }
     }
 }
@@ -89,9 +89,11 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
         return false;
     }
 
-    ssc::controller::SceneCameraCoordinator::GetSingleton()->Configure(
-        *ssc::controller::SexLabPSceneController::GetSingleton(),
-        *ssc::controller::SmoothCamCameraController::GetSingleton());
+    auto* sceneCamera = ssc::SceneCamera::GetSingleton();
+    sceneCamera->Configure(
+        *ssc::runtime::SexLabPSceneSource::GetSingleton(),
+        *ssc::runtime::SmoothCamCameraControl::GetSingleton());
+    ssc::runtime::CameraHook::Configure(*sceneCamera);
 
     const auto* messaging = SKSE::GetMessagingInterface();
     if (!messaging || !messaging->RegisterListener(MessageHandler)) {

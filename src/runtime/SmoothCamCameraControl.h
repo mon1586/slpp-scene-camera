@@ -1,16 +1,16 @@
 #pragma once
 
-#include "controller/CameraOutput.h"
-#include "controller/ICameraController.h"
+#include "runtime/CameraOutput.h"
+#include "runtime/ICameraControl.h"
 
 #include <SmoothCamAPI.h>
 
-namespace ssc::controller
+namespace ssc::runtime
 {
-    class SmoothCamCameraController final : public ICameraController
+    class SmoothCamCameraControl final : public ICameraControl
     {
     public:
-        static SmoothCamCameraController* GetSingleton() noexcept;
+        static SmoothCamCameraControl* GetSingleton() noexcept;
 
         [[nodiscard]] bool RegisterAPIListener(const SKSE::MessagingInterface* a_messaging);
         [[nodiscard]] bool RequestAPI(const SKSE::MessagingInterface* a_messaging);
@@ -20,10 +20,8 @@ namespace ssc::controller
         [[nodiscard]] bool Acquire() override;
         [[nodiscard]] bool StillOwnsCamera() const noexcept override;
         [[nodiscard]] bool OwnsCamera() const noexcept override;
-        [[nodiscard]] CameraApplyResult Apply(
-            RE::PlayerCamera* a_camera,
-            const core::CameraPose& a_pose) override;
-        void Release(const RE::Actor* a_player) override;
+        [[nodiscard]] CameraApplyResult Apply(const CameraPose& a_pose) override;
+        void Release() override;
         [[nodiscard]] bool EmergencyRelease() noexcept override;
 
     private:

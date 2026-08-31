@@ -18,7 +18,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 
-option(SSC_BUILD_TESTS "Build Controller layer unit tests" ON)
+option(SSC_BUILD_TESTS "Build unit tests" ON)
 
 # The POC uses a vtable hook and does not allocate a trampoline. Keep CommonLib's
 # own tests and patch-safety-only dependency out of this consumer build.
@@ -34,26 +34,28 @@ if(NOT COMMAND add_commonlibsse_plugin)
 endif()
 
 set(SSC_SOURCES
-    src/controller/CameraHook.cpp
-    src/controller/CameraHook.h
-    src/controller/CameraOutput.cpp
-    src/controller/CameraOutput.h
-    src/controller/ICameraController.h
-    src/controller/ISceneController.h
-    src/controller/SceneCameraCoordinator.cpp
-    src/controller/SceneCameraCoordinator.h
-    src/controller/SceneEvent.h
-    src/controller/SceneEventMailbox.cpp
-    src/controller/SceneEventMailbox.h
-    src/controller/SceneKey.h
-    src/controller/SceneSession.h
-    src/controller/SexLabPSceneController.cpp
-    src/controller/SexLabPSceneController.h
-    src/controller/SmoothCamCameraController.cpp
-    src/controller/SmoothCamCameraController.h
+    src/SceneCamera.cpp
+    src/SceneCamera.h
+    src/SceneSession.h
     src/core/CameraTypes.h
-    src/core/HighAltitudeRig.cpp
-    src/core/HighAltitudeRig.h
+    src/core/SceneAnchor.cpp
+    src/core/SceneAnchor.h
+    src/runtime/CameraHook.cpp
+    src/runtime/CameraHook.h
+    src/runtime/CameraOutput.cpp
+    src/runtime/CameraOutput.h
+    src/runtime/ICameraControl.h
+    src/runtime/IRuntimeClient.h
+    src/runtime/ISceneSource.h
+    src/runtime/SceneEvent.h
+    src/runtime/SceneEventMailbox.cpp
+    src/runtime/SceneEventMailbox.h
+    src/runtime/SceneKey.h
+    src/runtime/RuntimeTypes.h
+    src/runtime/SexLabPSceneSource.cpp
+    src/runtime/SexLabPSceneSource.h
+    src/runtime/SmoothCamCameraControl.cpp
+    src/runtime/SmoothCamCameraControl.h
     src/main.cpp
     src/pch.h
 )
@@ -104,14 +106,16 @@ set_target_properties(
 if(SSC_BUILD_TESTS)
     enable_testing()
     add_executable(
-        SexlabSceneCameraControllerTests
+        SexlabSceneCameraTests
         tests/SceneSessionTests.cpp
-        src/controller/SceneSession.h
+        src/core/SceneAnchor.cpp
+        src/core/SceneAnchor.h
+        src/SceneSession.h
     )
-    target_include_directories(SexlabSceneCameraControllerTests PRIVATE src)
+    target_include_directories(SexlabSceneCameraTests PRIVATE src)
     if(MSVC)
         target_compile_options(
-            SexlabSceneCameraControllerTests
+            SexlabSceneCameraTests
             PRIVATE
                 /EHsc
                 /permissive-
@@ -119,7 +123,7 @@ if(SSC_BUILD_TESTS)
         )
     endif()
     add_test(
-        NAME SexlabSceneCamera.Controller.SceneSession
-        COMMAND SexlabSceneCameraControllerTests
+        NAME SexlabSceneCamera.SceneSession
+        COMMAND SexlabSceneCameraTests
     )
 endif()

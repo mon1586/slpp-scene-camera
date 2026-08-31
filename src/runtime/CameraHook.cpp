@@ -1,8 +1,6 @@
-#include "controller/CameraHook.h"
+#include "runtime/CameraHook.h"
 
-#include "controller/SceneCameraCoordinator.h"
-
-namespace ssc::controller
+namespace ssc::runtime
 {
     namespace
     {
@@ -23,12 +21,14 @@ namespace ssc::controller
             {
                 try {
                     auto* mailbox = SceneEventMailbox::GetSingleton();
-                    auto* coordinator = SceneCameraCoordinator::GetSingleton();
-                    if (coordinator->NeedsUpdate() || mailbox->HasPending()) {
+                    auto* client = CameraHook::GetClient();
+                    if (client && (client->NeedsUpdate() || mailbox->HasPending())) {
                         CameraHook::QueueRefresh();
                     }
                 } catch (...) {
-                    SceneCameraCoordinator::GetSingleton()->RequestReset();
+                    if (auto* client = CameraHook::GetClient()) {
+                        client->RequestReset();
+                    }
                 }
                 return RE::BSEventNotifyControl::kContinue;
             }
@@ -40,6 +40,11 @@ namespace ssc::controller
             std::uintptr_t slot{ 0 };
             std::uintptr_t original{ 0 };
         };
+    }
+
+    void CameraHook::Configure(IRuntimeClient& a_client) noexcept
+    {
+        client_ = std::addressof(a_client);
     }
 
     bool CameraHook::IsInstalled() noexcept
@@ -63,11 +68,15 @@ namespace ssc::controller
                     return;
                 }
 
-                auto* coordinator = SceneCameraCoordinator::GetSingleton();
+                auto* client = client_;
+                if (!client) {
+                    logger::error("Ignoring scene event: runtime client is unavailable");
+                    return;
+                }
                 const auto isStartEvent = a_event.type == SceneEventType::kAnimationStarting ||
                                           a_event.type == SceneEventType::kAnimationStart;
                 auto preparedEvent = a_event;
-                const auto eligible = !isStartEvent || coordinator->PrepareStartEvent(preparedEvent);
+                const auto eligible = !isStartEvent || client->PrepareStartEvent(preparedEvent);
                 if (!IsInstalled()) {
                     if (!isStartEvent || !eligible) {
                         return;
@@ -88,7 +97,9 @@ namespace ssc::controller
                     logger::critical("Scene event task failed: {}", exception.what());
                 } catch (...) {
                 }
-                SceneCameraCoordinator::GetSingleton()->RequestReset();
+                if (auto* client = client_) {
+                    client->RequestReset();
+                }
             } catch (...) {
                 HandleBoundaryFailure("scene event task"sv);
             }
@@ -271,20 +282,22 @@ namespace ssc::controller
         }
 
         auto* mailbox = SceneEventMailbox::GetSingleton();
-        auto* coordinator = SceneCameraCoordinator::GetSingleton();
-        if (!mailbox->HasPending() && !coordinator->NeedsUpdate()) {
+        auto* client = client_;
+        if (!client || (!mailbox->HasPending() && !client->NeedsUpdate())) {
             return;
         }
 
         try {
-            mailbox->DispatchPending();
-            coordinator->Update(RE::PlayerCamera::GetSingleton());
+            mailbox->DispatchPending(*client);
+            if (auto* ui = RE::UI::GetSingleton(); !ui || !ui->GameIsPaused()) {
+                client->Update();
+            }
         } catch (const std::exception& exception) {
             try {
                 logger::critical("Camera-state update failed: {}", exception.what());
             } catch (...) {
             }
-            coordinator->EmergencyReset();
+            client->EmergencyReset();
         } catch (...) {
             HandleBoundaryFailure("camera-state update"sv);
         }
@@ -320,6 +333,8 @@ namespace ssc::controller
             logger::critical("Unhandled exception at {} boundary; camera ownership will be released", a_context);
         } catch (...) {
         }
-        SceneCameraCoordinator::GetSingleton()->RequestReset();
+        if (auto* client = client_) {
+            client->RequestReset();
+        }
     }
 }

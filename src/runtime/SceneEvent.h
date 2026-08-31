@@ -1,8 +1,8 @@
 #pragma once
 
-#include "controller/SceneKey.h"
+#include "runtime/SceneKey.h"
 
-namespace ssc::controller
+namespace ssc::runtime
 {
     enum class SceneEventType
     {
