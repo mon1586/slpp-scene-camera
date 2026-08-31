@@ -1,18 +1,11 @@
 #pragma once
 
-#include <cstdint>
+#include "controller/SceneKey.h"
+
 #include <optional>
 
 namespace ssc::controller
 {
-    struct SceneKey
-    {
-        std::uint32_t senderID{ 0 };
-        std::int32_t threadID{ -1 };
-
-        [[nodiscard]] friend bool operator==(const SceneKey&, const SceneKey&) = default;
-    };
-
     class SceneSession
     {
     public:

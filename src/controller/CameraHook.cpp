@@ -1,6 +1,6 @@
 #include "controller/CameraHook.h"
 
-#include "controller/SceneCameraController.h"
+#include "controller/SceneCameraCoordinator.h"
 
 namespace ssc::controller
 {
@@ -23,12 +23,12 @@ namespace ssc::controller
             {
                 try {
                     auto* mailbox = SceneEventMailbox::GetSingleton();
-                    auto* controller = SceneCameraController::GetSingleton();
-                    if (controller->NeedsUpdate() || mailbox->HasPending()) {
+                    auto* coordinator = SceneCameraCoordinator::GetSingleton();
+                    if (coordinator->NeedsUpdate() || mailbox->HasPending()) {
                         CameraHook::QueueRefresh();
                     }
                 } catch (...) {
-                    SceneCameraController::GetSingleton()->RequestReset();
+                    SceneCameraCoordinator::GetSingleton()->RequestReset();
                 }
                 return RE::BSEventNotifyControl::kContinue;
             }
@@ -51,28 +51,29 @@ namespace ssc::controller
     {
         auto* tasks = SKSE::GetTaskInterface();
         if (!tasks) {
-            logger::error("Ignoring SexLab event: SKSE task interface is unavailable");
+            logger::error("Ignoring scene event: SKSE task interface is unavailable");
             return;
         }
 
-        tasks->AddTask([a_event] {
+        const auto generation = SceneEventMailbox::GetSingleton()->CurrentGeneration();
+        tasks->AddTask([a_event, generation] {
             try {
                 auto* mailbox = SceneEventMailbox::GetSingleton();
-                if (a_event.generation != mailbox->CurrentGeneration()) {
+                if (generation != mailbox->CurrentGeneration()) {
                     return;
                 }
 
-                auto* controller = SceneCameraController::GetSingleton();
+                auto* coordinator = SceneCameraCoordinator::GetSingleton();
                 const auto isStartEvent = a_event.type == SceneEventType::kAnimationStarting ||
                                           a_event.type == SceneEventType::kAnimationStart;
                 auto preparedEvent = a_event;
-                const auto eligible = !isStartEvent || controller->PrepareStartEvent(preparedEvent);
+                const auto eligible = !isStartEvent || coordinator->PrepareStartEvent(preparedEvent);
                 if (!IsInstalled()) {
                     if (!isStartEvent || !eligible) {
                         return;
                     }
                     if (!InstallOrRefresh()) {
-                        logger::error("Ignoring SexLab scene: camera-state update hook is unavailable");
+                        logger::error("Ignoring scene: camera-state update hook is unavailable");
                         return;
                     }
                 } else if (isStartEvent && eligible) {
@@ -81,13 +82,13 @@ namespace ssc::controller
                     }
                 }
 
-                static_cast<void>(mailbox->Enqueue(preparedEvent));
+                static_cast<void>(mailbox->Enqueue(preparedEvent, generation));
             } catch (const std::exception& exception) {
                 try {
                     logger::critical("Scene event task failed: {}", exception.what());
                 } catch (...) {
                 }
-                SceneCameraController::GetSingleton()->RequestReset();
+                SceneCameraCoordinator::GetSingleton()->RequestReset();
             } catch (...) {
                 HandleBoundaryFailure("scene event task"sv);
             }
@@ -270,20 +271,20 @@ namespace ssc::controller
         }
 
         auto* mailbox = SceneEventMailbox::GetSingleton();
-        auto* controller = SceneCameraController::GetSingleton();
-        if (!mailbox->HasPending() && !controller->NeedsUpdate()) {
+        auto* coordinator = SceneCameraCoordinator::GetSingleton();
+        if (!mailbox->HasPending() && !coordinator->NeedsUpdate()) {
             return;
         }
 
         try {
             mailbox->DispatchPending();
-            controller->Update(RE::PlayerCamera::GetSingleton());
+            coordinator->Update(RE::PlayerCamera::GetSingleton());
         } catch (const std::exception& exception) {
             try {
                 logger::critical("Camera-state update failed: {}", exception.what());
             } catch (...) {
             }
-            controller->EmergencyReset();
+            coordinator->EmergencyReset();
         } catch (...) {
             HandleBoundaryFailure("camera-state update"sv);
         }
@@ -319,6 +320,6 @@ namespace ssc::controller
             logger::critical("Unhandled exception at {} boundary; camera ownership will be released", a_context);
         } catch (...) {
         }
-        SceneCameraController::GetSingleton()->RequestReset();
+        SceneCameraCoordinator::GetSingleton()->RequestReset();
     }
 }

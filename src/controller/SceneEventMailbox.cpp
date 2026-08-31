@@ -1,6 +1,6 @@
 #include "controller/SceneEventMailbox.h"
 
-#include "controller/SceneCameraController.h"
+#include "controller/SceneCameraCoordinator.h"
 
 #include <REX/W32/KERNEL32.h>
 
@@ -32,14 +32,14 @@ namespace ssc::controller
         return hasPending_.load(std::memory_order_acquire);
     }
 
-    bool SceneEventMailbox::Enqueue(SceneEvent a_event)
+    bool SceneEventMailbox::Enqueue(SceneEvent a_event, std::uint64_t a_generation)
     {
-        if (a_event.generation != CurrentGeneration()) {
+        if (a_generation != CurrentGeneration()) {
             return false;
         }
 
         std::scoped_lock lock{ mutex_ };
-        if (a_event.generation != generation_.load(std::memory_order_relaxed)) {
+        if (a_generation != generation_.load(std::memory_order_relaxed)) {
             return false;
         }
         if (emergencyReset_.load(std::memory_order_acquire)) {
@@ -55,7 +55,7 @@ namespace ssc::controller
         }
 
         const auto tail = (head_ + size_) % events_.size();
-        events_[tail] = a_event;
+        events_[tail] = { a_event, a_generation };
         ++size_;
         hasPending_.store(true, std::memory_order_release);
         return true;
@@ -71,7 +71,7 @@ namespace ssc::controller
             logger::info("Scene event mailbox dispatch thread is {}", REX::W32::GetCurrentThreadId());
         });
 
-        std::array<SceneEvent, kCapacity> pending{};
+        std::array<QueuedSceneEvent, kCapacity> pending{};
         std::size_t pendingCount = 0;
         bool emergencyReset = false;
         {
@@ -88,29 +88,30 @@ namespace ssc::controller
             hasPending_.store(false, std::memory_order_release);
         }
 
-        auto* controller = SceneCameraController::GetSingleton();
+        auto* coordinator = SceneCameraCoordinator::GetSingleton();
         if (emergencyReset) {
-            controller->Reset("scene event mailbox overflow"sv);
+            coordinator->Reset("scene event mailbox overflow"sv);
             return;
         }
 
         for (std::size_t index = 0; index < pendingCount; ++index) {
-            const auto& event = pending[index];
-            if (event.generation != CurrentGeneration()) {
+            const auto& queuedEvent = pending[index];
+            if (queuedEvent.generation != CurrentGeneration()) {
                 continue;
             }
+            const auto& event = queuedEvent.event;
             switch (event.type) {
             case SceneEventType::kAnimationStarting:
-                controller->OnAnimationStarting(event);
+                coordinator->OnAnimationStarting(event);
                 break;
             case SceneEventType::kAnimationStart:
-                controller->OnAnimationStart(event);
+                coordinator->OnAnimationStart(event);
                 break;
             case SceneEventType::kAnimationEnding:
-                controller->OnAnimationEnding(event);
+                coordinator->OnAnimationEnding(event);
                 break;
             case SceneEventType::kAnimationEnd:
-                controller->OnAnimationEnd(event);
+                coordinator->OnAnimationEnd(event);
                 break;
             }
         }

@@ -1,19 +1,20 @@
 #pragma once
 
-#include "controller/CameraOutput.h"
-#include "controller/SceneEventMailbox.h"
+#include "controller/ICameraController.h"
+#include "controller/ISceneController.h"
 #include "controller/SceneSession.h"
-#include "controller/SmoothCamAdapter.h"
 #include "core/HighAltitudeRig.h"
 
 namespace ssc::controller
 {
-    class SceneCameraController
+    class SceneCameraCoordinator
     {
     public:
-        static SceneCameraController* GetSingleton() noexcept;
+        static SceneCameraCoordinator* GetSingleton() noexcept;
 
-        void SetSmoothCamInterface(void* a_interface, SmoothCamAPI::InterfaceVersion a_version);
+        void Configure(
+            ISceneController& a_sceneController,
+            ICameraController& a_cameraController) noexcept;
 
         [[nodiscard]] bool PrepareStartEvent(SceneEvent& a_event) const;
         [[nodiscard]] bool NeedsUpdate() const noexcept;
@@ -29,19 +30,18 @@ namespace ssc::controller
         void EmergencyReset() noexcept;
 
     private:
-        [[nodiscard]] SceneParticipantSnapshot CollectParticipants(RE::FormID a_senderID) const;
         void Prepare(const SceneKey& a_key, const SceneParticipantSnapshot& a_participants);
         void Restore(std::string_view a_reason);
         void ApplyRequestedReset();
         void Clear() noexcept;
 
+        ISceneController* sceneController_{ nullptr };
+        ICameraController* cameraController_{ nullptr };
         SceneSession session_;
         SceneParticipantSnapshot participants_;
         std::chrono::steady_clock::time_point activeSince_{};
         std::atomic_bool active_{ false };
         std::atomic_bool resetRequested_{ false };
-        SmoothCamAdapter smoothCam_;
-        CameraOutput output_;
         core::HighAltitudeRig rig_;
     };
 }

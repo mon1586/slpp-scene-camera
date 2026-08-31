@@ -1,16 +1,9 @@
 #pragma once
 
-#include "core/HighAltitudeRig.h"
+#include "controller/ICameraController.h"
 
 namespace ssc::controller
 {
-    enum class CameraApplyResult
-    {
-        kApplied,
-        kUnsupportedState,
-        kMissingCamera,
-    };
-
     class CameraOutput
     {
     public:

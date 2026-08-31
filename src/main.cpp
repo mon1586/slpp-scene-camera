@@ -1,8 +1,8 @@
-#include "controller/SceneCameraController.h"
+#include "controller/CameraHook.h"
+#include "controller/SceneCameraCoordinator.h"
 #include "controller/SceneEventMailbox.h"
-#include "controller/SexLabEventSink.h"
-
-#include <SmoothCamAPI.h>
+#include "controller/SexLabPSceneController.h"
+#include "controller/SmoothCamCameraController.h"
 
 namespace
 {
@@ -26,8 +26,8 @@ namespace
     {
         auto* mailbox = ssc::controller::SceneEventMailbox::GetSingleton();
         mailbox->BeginNewGeneration();
-        auto* controller = ssc::controller::SceneCameraController::GetSingleton();
-        controller->RequestReset();
+        auto* coordinator = ssc::controller::SceneCameraCoordinator::GetSingleton();
+        coordinator->RequestReset();
         logger::info("Camera reset requested: {}", a_reason);
     }
 
@@ -40,28 +40,19 @@ namespace
         try {
             const auto* messaging = SKSE::GetMessagingInterface();
             switch (a_message->type) {
-            case SKSE::MessagingInterface::kPostLoad: {
-                const auto registered = SmoothCamAPI::RegisterInterfaceLoaderCallback(
-                    messaging,
-                    [](void* a_interface, SmoothCamAPI::InterfaceVersion a_version) {
-                        try {
-                            ssc::controller::SceneCameraController::GetSingleton()->SetSmoothCamInterface(
-                                a_interface, a_version);
-                        } catch (...) {
-                            ssc::controller::SceneCameraController::GetSingleton()->RequestReset();
-                        }
-                    });
-                logger::info("SmoothCam interface callback registration: {}", registered ? "OK" : "FAILED");
+            case SKSE::MessagingInterface::kPostLoad:
+                static_cast<void>(
+                    ssc::controller::SmoothCamCameraController::GetSingleton()->RegisterAPIListener(messaging));
                 break;
-            }
-            case SKSE::MessagingInterface::kPostPostLoad: {
-                const auto requested = SmoothCamAPI::RequestInterface(
-                    messaging, SmoothCamAPI::InterfaceVersion::V2);
-                logger::info("SmoothCam V2 interface request dispatched: {}", requested ? "yes" : "no listener");
+            case SKSE::MessagingInterface::kPostPostLoad:
+                static_cast<void>(
+                    ssc::controller::SmoothCamCameraController::GetSingleton()->RequestAPI(messaging));
                 break;
-            }
             case SKSE::MessagingInterface::kDataLoaded:
-                ssc::controller::SexLabEventSink::Register();
+                if (!ssc::controller::SexLabPSceneController::GetSingleton()->Register(
+                        ssc::controller::CameraHook::SubmitEvent)) {
+                    logger::warn("No scene controller was registered");
+                }
                 break;
             case SKSE::MessagingInterface::kPreLoadGame:
                 QueueLifecycleReset("pre-load game"sv);
@@ -80,9 +71,9 @@ namespace
                 logger::critical("SKSE message handler failed: {}", exception.what());
             } catch (...) {
             }
-            ssc::controller::SceneCameraController::GetSingleton()->RequestReset();
+            ssc::controller::SceneCameraCoordinator::GetSingleton()->RequestReset();
         } catch (...) {
-            ssc::controller::SceneCameraController::GetSingleton()->RequestReset();
+            ssc::controller::SceneCameraCoordinator::GetSingleton()->RequestReset();
         }
     }
 }
@@ -97,6 +88,10 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
         logger::critical("Skyrim VR is not supported by this POC");
         return false;
     }
+
+    ssc::controller::SceneCameraCoordinator::GetSingleton()->Configure(
+        *ssc::controller::SexLabPSceneController::GetSingleton(),
+        *ssc::controller::SmoothCamCameraController::GetSingleton());
 
     const auto* messaging = SKSE::GetMessagingInterface();
     if (!messaging || !messaging->RegisterListener(MessageHandler)) {

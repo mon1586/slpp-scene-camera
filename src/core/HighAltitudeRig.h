@@ -1,33 +1,16 @@
 #pragma once
 
-#include <array>
+#include "core/CameraTypes.h"
+
 #include <optional>
 #include <span>
 
 namespace ssc::core
 {
-    struct Vec3
-    {
-        float x{ 0.0F };
-        float y{ 0.0F };
-        float z{ 0.0F };
-    };
-
     struct CameraFrameInput
     {
         std::span<const Vec3> subjects;
         std::optional<Vec3> fallbackCenter;
-    };
-
-    struct RotationMatrix
-    {
-        std::array<std::array<float, 3>, 3> entries{};
-    };
-
-    struct CameraPose
-    {
-        Vec3 position;
-        RotationMatrix rotation;
     };
 
     class HighAltitudeRig

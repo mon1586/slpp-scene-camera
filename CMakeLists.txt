@@ -38,15 +38,20 @@ set(SSC_SOURCES
     src/controller/CameraHook.h
     src/controller/CameraOutput.cpp
     src/controller/CameraOutput.h
+    src/controller/ICameraController.h
+    src/controller/ISceneController.h
+    src/controller/SceneCameraCoordinator.cpp
+    src/controller/SceneCameraCoordinator.h
+    src/controller/SceneEvent.h
     src/controller/SceneEventMailbox.cpp
     src/controller/SceneEventMailbox.h
+    src/controller/SceneKey.h
     src/controller/SceneSession.h
-    src/controller/SceneCameraController.cpp
-    src/controller/SceneCameraController.h
-    src/controller/SexLabEventSink.cpp
-    src/controller/SexLabEventSink.h
-    src/controller/SmoothCamAdapter.cpp
-    src/controller/SmoothCamAdapter.h
+    src/controller/SexLabPSceneController.cpp
+    src/controller/SexLabPSceneController.h
+    src/controller/SmoothCamCameraController.cpp
+    src/controller/SmoothCamCameraController.h
+    src/core/CameraTypes.h
     src/core/HighAltitudeRig.cpp
     src/core/HighAltitudeRig.h
     src/main.cpp

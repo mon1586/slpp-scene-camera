@@ -4,4 +4,4 @@
 /.vs/
 /CMakeUserPresets.json
 *.user
-
+.env

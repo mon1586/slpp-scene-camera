@@ -39,7 +39,7 @@ $toolchainCandidates = @(
 if (-not $toolchainCandidates) {
     throw 'vcpkg.cmake was not found. Set VCPKG_ROOT or install the Visual Studio vcpkg component.'
 }
-$toolchain = $toolchainCandidates[0]
+$toolchain = @($toolchainCandidates)[0]
 
 $triplet = 'x64-windows-static-md'
 $installedTriplet = Join-Path $BuildDirectory "vcpkg_installed\$triplet"

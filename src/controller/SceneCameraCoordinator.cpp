@@ -1,4 +1,4 @@
-#include "controller/SceneCameraController.h"
+#include "controller/SceneCameraCoordinator.h"
 
 namespace ssc::controller
 {
@@ -12,133 +12,79 @@ namespace ssc::controller
         }
     }
 
-    SceneCameraController* SceneCameraController::GetSingleton() noexcept
+    SceneCameraCoordinator* SceneCameraCoordinator::GetSingleton() noexcept
     {
-        static SceneCameraController singleton;
+        static SceneCameraCoordinator singleton;
         return std::addressof(singleton);
     }
 
-    void SceneCameraController::SetSmoothCamInterface(
-        void* a_interface,
-        SmoothCamAPI::InterfaceVersion a_version)
+    void SceneCameraCoordinator::Configure(
+        ISceneController& a_sceneController,
+        ICameraController& a_cameraController) noexcept
     {
-        smoothCam_.SetInterface(a_interface, a_version);
+        sceneController_ = std::addressof(a_sceneController);
+        cameraController_ = std::addressof(a_cameraController);
     }
 
-    SceneParticipantSnapshot SceneCameraController::CollectParticipants(
-        RE::FormID a_senderID) const
+    bool SceneCameraCoordinator::PrepareStartEvent(SceneEvent& a_event) const
     {
-        SceneParticipantSnapshot result;
-        auto* quest = RE::TESForm::LookupByID<RE::TESQuest>(a_senderID);
-        if (!quest) {
-            logger::warn("SexLab event sender {:08X} is not a live quest", a_senderID);
-            return result;
-        }
-
-        const auto* player = RE::PlayerCharacter::GetSingleton();
-        const RE::BSReadLockGuard lock{ quest->aliasAccessLock };
-
-        for (auto* baseAlias : quest->aliases) {
-            auto* refAlias = skyrim_cast<RE::BGSRefAlias*>(baseAlias);
-            auto* actor = refAlias ? refAlias->GetActorReference() : nullptr;
-            if (!actor) {
-                continue;
-            }
-
-            auto handle = actor->GetHandle();
-            if (!handle) {
-                continue;
-            }
-
-            const auto isPlayer = actor == player;
-            bool duplicate = false;
-            for (std::size_t index = 0; index < result.count; ++index) {
-                if (result.handles[index].native_handle() == handle.native_handle()) {
-                    duplicate = true;
-                    break;
-                }
-            }
-            if (duplicate) {
-                result.containsPlayer = result.containsPlayer || isPlayer;
-                continue;
-            }
-
-            if (result.count < result.handles.size()) {
-                result.handles[result.count++] = handle;
-                result.containsPlayer = result.containsPlayer || isPlayer;
-            } else {
-                result.truncated = true;
-                if (isPlayer && !result.containsPlayer) {
-                    result.handles.back() = handle;
-                    result.containsPlayer = true;
-                }
-            }
-        }
-
-        return result;
-    }
-
-    bool SceneCameraController::PrepareStartEvent(SceneEvent& a_event) const
-    {
-        if (!smoothCam_.CanAcquire()) {
+        if (!sceneController_ || !cameraController_ || !cameraController_->CanAcquire()) {
             return false;
         }
-        a_event.participants = CollectParticipants(a_event.senderID);
+        a_event.participants = sceneController_->CollectParticipants(a_event.key);
         return a_event.participants.containsPlayer;
     }
 
-    bool SceneCameraController::NeedsUpdate() const noexcept
+    bool SceneCameraCoordinator::NeedsUpdate() const noexcept
     {
         return active_.load(std::memory_order_acquire) ||
                resetRequested_.load(std::memory_order_acquire);
     }
 
-    void SceneCameraController::Prepare(
+    void SceneCameraCoordinator::Prepare(
         const SceneKey& a_key,
         const SceneParticipantSnapshot& a_participants)
     {
         if (session_.IsActive()) {
             if (!session_.Matches(a_key)) {
                 logger::info("Ignoring overlapping scene {:08X}/{} while another player scene is active",
-                    a_key.senderID, a_key.threadID);
+                    a_key.sourceID, a_key.instanceID);
             }
             return;
         }
 
         if (!a_participants.containsPlayer) {
             logger::info("Ignoring scene {:08X}/{}: player is not a participant",
-                a_key.senderID, a_key.threadID);
+                a_key.sourceID, a_key.instanceID);
             return;
         }
 
         static_cast<void>(session_.Prepare(a_key));
         participants_ = a_participants;
         logger::info("Scene {:08X}/{} prepared with {} participant(s)",
-            a_key.senderID, a_key.threadID, participants_.count);
+            a_key.sourceID, a_key.instanceID, participants_.count);
         if (participants_.truncated) {
             logger::warn("Scene participant list exceeded {}; extra actors were ignored",
                 SceneParticipantSnapshot::kCapacity);
         }
     }
 
-    void SceneCameraController::OnAnimationStarting(const SceneEvent& a_event)
+    void SceneCameraCoordinator::OnAnimationStarting(const SceneEvent& a_event)
     {
         ApplyRequestedReset();
-        const SceneKey key{ a_event.senderID, a_event.threadID };
-        logger::info("AnimationStarting {:08X}/{}", a_event.senderID, a_event.threadID);
-        Prepare(key, a_event.participants);
+        logger::info("AnimationStarting {:08X}/{}", a_event.key.sourceID, a_event.key.instanceID);
+        Prepare(a_event.key, a_event.participants);
     }
 
-    void SceneCameraController::OnAnimationStart(const SceneEvent& a_event)
+    void SceneCameraCoordinator::OnAnimationStart(const SceneEvent& a_event)
     {
         ApplyRequestedReset();
-        const SceneKey key{ a_event.senderID, a_event.threadID };
-        logger::info("AnimationStart {:08X}/{}", a_event.senderID, a_event.threadID);
+        logger::info("AnimationStart {:08X}/{}", a_event.key.sourceID, a_event.key.instanceID);
 
         if (session_.IsIdle()) {
-            Prepare(key, a_event.participants);
+            Prepare(a_event.key, a_event.participants);
         }
-        if (!session_.IsPreparing() || !session_.Matches(key)) {
+        if (!session_.IsPreparing() || !session_.Matches(a_event.key)) {
             return;
         }
 
@@ -149,47 +95,47 @@ namespace ssc::controller
         }
         participants_ = a_event.participants;
 
-        if (!smoothCam_.Acquire()) {
-            logger::warn("Scene camera activation failed; SmoothCam remains in control");
+        if (!cameraController_ || !cameraController_->Acquire()) {
+            logger::warn("Scene camera activation failed; configured camera controller remains in control");
             Clear();
             return;
         }
 
-        static_cast<void>(session_.Activate(key));
+        static_cast<void>(session_.Activate(a_event.key));
         active_.store(true, std::memory_order_release);
         activeSince_ = std::chrono::steady_clock::now();
-        logger::info("Scene camera ACTIVE for {:08X}/{}", a_event.senderID, a_event.threadID);
+        logger::info("Scene camera ACTIVE for {:08X}/{}",
+            a_event.key.sourceID, a_event.key.instanceID);
     }
 
-    void SceneCameraController::OnAnimationEnding(const SceneEvent& a_event)
+    void SceneCameraCoordinator::OnAnimationEnding(const SceneEvent& a_event)
     {
         ApplyRequestedReset();
-        const SceneKey key{ a_event.senderID, a_event.threadID };
-        logger::info("AnimationEnding {:08X}/{}", a_event.senderID, a_event.threadID);
-        if (session_.Matches(key)) {
+        logger::info("AnimationEnding {:08X}/{}", a_event.key.sourceID, a_event.key.instanceID);
+        if (session_.Matches(a_event.key)) {
             Restore("matching AnimationEnding"sv);
         }
     }
 
-    void SceneCameraController::OnAnimationEnd(const SceneEvent& a_event)
+    void SceneCameraCoordinator::OnAnimationEnd(const SceneEvent& a_event)
     {
         ApplyRequestedReset();
-        const SceneKey key{ a_event.senderID, a_event.threadID };
-        logger::info("AnimationEnd {:08X}/{}", a_event.senderID, a_event.threadID);
-        if (!session_.Matches(key)) {
-            logger::info("Ignoring stale AnimationEnd {:08X}/{}", a_event.senderID, a_event.threadID);
+        logger::info("AnimationEnd {:08X}/{}", a_event.key.sourceID, a_event.key.instanceID);
+        if (!session_.Matches(a_event.key)) {
+            logger::info("Ignoring stale AnimationEnd {:08X}/{}",
+                a_event.key.sourceID, a_event.key.instanceID);
             return;
         }
         Restore("matching AnimationEnd"sv);
     }
 
-    void SceneCameraController::Update(RE::PlayerCamera* a_camera)
+    void SceneCameraCoordinator::Update(RE::PlayerCamera* a_camera)
     {
         ApplyRequestedReset();
         if (!session_.IsActive()) {
             return;
         }
-        if (!smoothCam_.StillOwnsCamera()) {
+        if (!cameraController_ || !cameraController_->StillOwnsCamera()) {
             logger::warn("Scene camera ownership was lost; clearing local state without releasing another owner");
             Clear();
             return;
@@ -232,7 +178,7 @@ namespace ssc::controller
             return;
         }
 
-        switch (output_.Apply(a_camera, *pose)) {
+        switch (cameraController_->Apply(a_camera, *pose)) {
         case CameraApplyResult::kApplied:
             break;
         case CameraApplyResult::kUnsupportedState:
@@ -244,7 +190,7 @@ namespace ssc::controller
         }
     }
 
-    void SceneCameraController::Restore(std::string_view a_reason)
+    void SceneCameraCoordinator::Restore(std::string_view a_reason)
     {
         if (session_.IsIdle()) {
             return;
@@ -252,44 +198,50 @@ namespace ssc::controller
 
         session_.BeginRestore();
         logger::info("Restoring camera: {}", a_reason);
-        smoothCam_.Release(RE::PlayerCharacter::GetSingleton());
+        if (cameraController_) {
+            cameraController_->Release(RE::PlayerCharacter::GetSingleton());
+        }
         Clear();
         logger::info("Scene camera IDLE");
     }
 
-    void SceneCameraController::Reset(std::string_view a_reason)
+    void SceneCameraCoordinator::Reset(std::string_view a_reason)
     {
         resetRequested_.store(false, std::memory_order_release);
         Restore(a_reason);
     }
 
-    void SceneCameraController::RequestReset() noexcept
+    void SceneCameraCoordinator::RequestReset() noexcept
     {
         resetRequested_.store(true, std::memory_order_release);
-        static_cast<void>(smoothCam_.EmergencyRelease());
+        if (cameraController_) {
+            static_cast<void>(cameraController_->EmergencyRelease());
+        }
     }
 
-    void SceneCameraController::EmergencyReset() noexcept
+    void SceneCameraCoordinator::EmergencyReset() noexcept
     {
-        static_cast<void>(smoothCam_.EmergencyRelease());
+        if (cameraController_) {
+            static_cast<void>(cameraController_->EmergencyRelease());
+        }
         resetRequested_.store(false, std::memory_order_release);
         Clear();
     }
 
-    void SceneCameraController::ApplyRequestedReset()
+    void SceneCameraCoordinator::ApplyRequestedReset()
     {
         if (!resetRequested_.exchange(false, std::memory_order_acq_rel)) {
             return;
         }
 
-        if (smoothCam_.OwnsCamera()) {
+        if (cameraController_ && cameraController_->OwnsCamera()) {
             Restore("lifecycle reset"sv);
         } else {
             Clear();
         }
     }
 
-    void SceneCameraController::Clear() noexcept
+    void SceneCameraCoordinator::Clear() noexcept
     {
         participants_ = {};
         session_.Clear();

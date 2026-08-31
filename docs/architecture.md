@@ -12,48 +12,39 @@ SexLab P+ のプレイヤー参加シーンが始まったら SmoothCam から�
 - **Core レイヤー**は、シーンをどう写すかだけを決定する。
 - 依存方向は `Controller -> Core` の一方向とする。
 - Core は SexLab P+、SmoothCam、SKSE のイベント、カメラ所有権を知らない。
+- 外部のシーン Mod とカメラ Mod には、それぞれ `ISceneController` と `ICameraController` を通して依存する。
+- `SceneCameraCoordinator` は具象 Mod adapter を知らず、composition root だけが interface と具象を接続する。
 - Head を固定アンカーにはしない。最優先の画作り要件は、対象キャラクターが画角から見切れないことである。
 
 ## 全体構成
 
 ```text
-SexLab P+ ModCallbackEvent
-            |
-            v
-+---------------- Controller layer ----------------+
-| イベント判定 -> 状態管理 -> SmoothCam 制御取得   |
-|                    |                              |
-| 参加者情報の収集 --+--> Core 呼び出し --> Pose適用|
-|                                                   |
-| シーン終了 -> カメラ復帰 -> SmoothCam 制御解放   |
-+------------------------|--------------------------+
-                         v
-                 +-- Core layer --+
-                 | 構図・位置・向き |
-                 | FOV・補間（将来）|
-                 +-----------------+
+SexLab P+ -> SexLabPSceneController -> ISceneController --+
+                                                          |
+                                                          v
+                                              SceneCameraCoordinator -> Core
+                                                          |
+                                                          v
+SmoothCam <- SmoothCamCameraController -> ICameraController
 ```
 
 ## Controller レイヤー
 
-Controller は「いつ独自カメラに切り替え、いつ元へ戻すか」の唯一の責任者である。
+Controller レイヤーは、外部 Mod adapter とシーンカメラの調停を分離する。
 
 ### 責務
 
-- SexLab P+ のシーンイベントを受信する。
-  - 想定イベント: `AnimationStarting`、`AnimationStart`、`AnimationEnding`、`AnimationEnd`
-  - `sender` と thread ID をシーン識別子として保持する。
-- シーン参加者を取得し、プレイヤーが含まれるシーンだけを対象にする。
+- `ISceneController` は、シーン Mod 固有のイベントと参加者取得を共通の scene key、イベント、participant snapshot へ変換する。
+- `ICameraController` は、カメラ Mod 固有の所有権取得、pose 適用、復帰、解放を共通操作として提供する。
+- `SceneCameraCoordinator` は両 interface と Core だけに依存し、対象シーンの選別、状態遷移、Core 評価、fail-safe を調停する。
+- composition root は使用する `ISceneController` と `ICameraController` の具象を選択し、`SceneCameraCoordinator` へ注入する。
 - イベント sink では送信元と payload の検証だけを行い、ゲーム状態の参照と hook 導入は一回限りのゲームスレッド task へ渡す。
 - quest alias の走査はゲームスレッド task で固定長 snapshot に変換し、カメラ更新 hook 内では alias lock や動的確保を行わない。
-- SmoothCam の公式 API を通じてカメラ制御を取得する。
-- 復帰に必要な状態を保持し、終了時に SmoothCam の目標位置へ戻してから制御を解放する。
 - 毎フレーム、参加者の位置・可視範囲などを `CameraFrameInput` に変換して Core へ渡す。
-- Core が返した `CameraPose` を実際のゲームカメラへ適用する。
 - 重複開始、古い終了イベント、NPC のみのシーン、制御取得失敗を安全に無視または復旧する。
 - `AnimationEnding`、参加者消失、非対応カメラ状態、所有権喪失、watchdog、ロード、新規ゲームのいずれからでも制御を残留させない。
 
-SmoothCam API の呼び出しとゲームカメラへの書き込みは Controller 内部の adapter だけが行う。Core からこれらの API を直接呼び出してはならない。
+初期構成では `SexLabPSceneController` が `ISceneController` を、`SmoothCamCameraController` が `ICameraController` を実装する。別のシーン Mod またはカメラ Mod へ対応するときは具象 adapter を追加し、Coordinator と Core は変更しない。
 
 ### 状態機械
 
@@ -66,14 +57,16 @@ SmoothCam API の呼び出しとゲームカメラへの書き込みは Controll
 
 すべての終了イベントは、現在のシーン識別子と一致した場合だけ状態を変更する。どの失敗経路からでも、所有しているカメラ制御を解放して `Idle` に戻れるようにする。
 
-### 想定コンポーネント
+### コンポーネント
 
-- `SexLabPEventSource`: `ModCallbackEvent` を受信し、シーンイベントへ正規化する。
+- `ISceneController`: シーンイベントと参加者取得の外部 Mod 非依存 port。
+- `SexLabPSceneController`: `ModCallbackEvent` と quest alias を `ISceneController` の契約へ変換する adapter。
+- `ICameraController`: カメラ所有権と pose 出力の外部 Mod 非依存 port。
+- `SmoothCamCameraController`: SmoothCam API とゲームカメラ出力を `ICameraController` の契約へ変換する adapter。
 - `SceneSession`: Skyrim API から独立した純粋な状態機械として、scene key と遷移だけを管理する。
-- `SceneCameraController`: 参加者 snapshot、所有権、Core、出力を調停し、`SceneSession` を駆動する。
-- `SmoothCamOwnership`: SmoothCam の制御取得、復帰、解放を隠蔽する。
-- `CameraOutput`: `CameraPose` をゲームカメラへ適用する。
-- `GameThreadMailbox`: イベント受信側から安全な更新コンテキストへ命令を渡す。
+- `SceneCameraCoordinator`: 2つの port、参加者 snapshot、Core を調停し、`SceneSession` を駆動する。
+- `CameraOutput`: `SmoothCamCameraController` 内部で `CameraPose` をゲームカメラへ適用する。
+- `SceneEventMailbox`: イベント受信側から安全な更新コンテキストへ命令を渡す。
 
 イベントから毎フレーム更新へつなぐ際、`AddTask` の自己再投入ループは使わない。連続更新はカメラ更新コールバックまたは更新 hook で行い、イベント sink は開始・終了要求の通知だけに限定する。
 
@@ -87,11 +80,11 @@ Idle かつ mailbox が空なら、hook は original 呼び出し後に atomic �
 
 ### SexLab P+ イベント境界
 
-公開 API が保証する非同期 hook は `HookAnimationStart` / `HookAnimationEnd` で、Papyrus の受信引数は `(int aiThreadID, bool abHasPlayer)` である。一方、現在の P+ 同梱 `sslThreadModel.psc` はその公開 hook と同時に、`SendModEvent("AnimationStart", thread_id)` / `SendModEvent("AnimationEnd", thread_id)` という未接頭辞の互換イベントも送っている。POC のネイティブ sink は後者を受信する。
+公開 API が保証する非同期 hook は `HookAnimationStart` / `HookAnimationEnd` で、Papyrus の受信引数は `(int aiThreadID, bool abHasPlayer)` である。一方、現在の P+ 同梱 `sslThreadModel.psc` はその公開 hook と同時に、`SendModEvent("AnimationStart", thread_id)` / `SendModEvent("AnimationEnd", thread_id)` という未接頭辞の互換イベントも送っている。初期 `ISceneController` adapter は後者を受信する。
 
-SKSE の `Form.SendModEvent` は `(eventName, strArg, numArg)` なので、上記の2引数呼び出しでは thread ID は数値引数ではなく `strArg` に文字列として格納される。Controller は `strArg` を整数として解析し、他の sender との互換性のため `numArg` をフォールバックにする。`sender` は thread quest の FormID として保持し、thread ID と組み合わせて古い終了イベントを排除する。
+SKSE の `Form.SendModEvent` は `(eventName, strArg, numArg)` なので、上記の2引数呼び出しでは thread ID は数値引数ではなく `strArg` に文字列として格納される。`SexLabPSceneController` は `strArg` を整数として解析し、他の sender との互換性のため `numArg` をフォールバックにする。`sender` は thread quest の FormID として共通 scene key へ変換し、thread ID と組み合わせて古い終了イベントを排除する。
 
-この未接頭辞イベントは公開 API には記載されていない。共有 dispatcher 上の同名イベントによる誤作動を防ぐため、sender は `TESQuest` かつ定義元ファイルが `SexLab.esm` の場合だけ受理する。将来 P+ が互換イベントを削除した場合は、公式 `HookAnimationStart` / `HookAnimationEnd` を受ける最小 Papyrus bridge を Controller 入力 adapter として追加する。Core には影響させない。
+この未接頭辞イベントは公開 API には記載されていない。共有 dispatcher 上の同名イベントによる誤作動を防ぐため、sender は `TESQuest` かつ定義元ファイルが `SexLab.esm` の場合だけ受理する。将来 P+ が互換イベントを削除した場合は、公式 `HookAnimationStart` / `HookAnimationEnd` を受ける別の `ISceneController` adapter を追加する。Coordinator と Core には影響させない。
 
 ## Core レイヤー
 
