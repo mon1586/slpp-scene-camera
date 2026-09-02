@@ -1,7 +1,5 @@
 #pragma once
 
-#include <array>
-
 namespace ssc::core
 {
     struct Vec3
@@ -11,14 +9,16 @@ namespace ssc::core
         float z{ 0.0F };
     };
 
-    struct RotationMatrix
+    struct CameraBasis
     {
-        std::array<std::array<float, 3>, 3> entries{};
+        Vec3 viewForward;
+        Vec3 up;
+        Vec3 right;
     };
 
     struct CameraPose
     {
         Vec3 position;
-        RotationMatrix rotation;
+        CameraBasis basis;
     };
 }

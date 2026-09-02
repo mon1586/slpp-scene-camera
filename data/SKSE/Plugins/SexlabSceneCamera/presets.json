@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "presets": [
+    {
+      "id": "default",
+      "offset": {
+        "right": 0.0,
+        "forward": -200.0,
+        "up": 60.0
+      }
+    }
+  ]
+}

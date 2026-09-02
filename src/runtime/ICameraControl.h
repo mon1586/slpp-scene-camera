@@ -9,6 +9,17 @@ namespace ssc::runtime
         kApplied,
         kUnsupportedState,
         kMissingCamera,
+        kNotOwner,
+        kWrongThread,
+        kUpdatePathUnavailable,
+    };
+
+    enum class CameraReleaseResult
+    {
+        kReleased,
+        kNoOwnership,
+        kWrongThread,
+        kFailed,
     };
 
     class ICameraControl
@@ -21,7 +32,7 @@ namespace ssc::runtime
         [[nodiscard]] virtual bool StillOwnsCamera() const noexcept = 0;
         [[nodiscard]] virtual bool OwnsCamera() const noexcept = 0;
         [[nodiscard]] virtual CameraApplyResult Apply(const CameraPose& a_pose) = 0;
-        virtual void Release() = 0;
+        [[nodiscard]] virtual CameraReleaseResult Release() = 0;
         [[nodiscard]] virtual bool EmergencyRelease() noexcept = 0;
     };
 }

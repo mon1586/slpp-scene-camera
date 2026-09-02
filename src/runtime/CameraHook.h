@@ -1,7 +1,7 @@
 #pragma once
 
+#include "runtime/IRuntimeClient.h"
 #include "runtime/ISceneSource.h"
-#include "runtime/SceneEventMailbox.h"
 
 namespace ssc::runtime
 {
@@ -9,7 +9,11 @@ namespace ssc::runtime
     {
     public:
         static void Configure(IRuntimeClient& a_client, ISceneSource& a_sceneSource) noexcept;
+        [[nodiscard]] static bool RegisterCameraStateSink() noexcept;
         static void SubmitEvent(SceneEvent a_event);
+        static void QueueReset(std::string_view a_reason) noexcept;
+        static void InvalidatePendingEvents() noexcept;
+        [[nodiscard]] static bool IsUpdateHookHealthy() noexcept;
 
     private:
         enum class InstallState : std::uint8_t
@@ -43,12 +47,15 @@ namespace ssc::runtime
         static void HandleBoundaryFailure(std::string_view a_context) noexcept;
         static void HandleUpdateFailure(std::string_view a_context) noexcept;
 
-        static inline constexpr std::size_t kMaxHookedVtables = RE::CameraStates::kTotal;
+        static inline constexpr std::size_t kMaxHookedVtables = 2;
         static inline std::array<HookEntry, kMaxHookedVtables> entries_{};
         static inline std::array<std::atomic<UpdateFunction>, kMaxHookedVtables> originals_{};
         static inline std::size_t entryCount_{ 0 };
         static inline std::atomic<InstallState> installState_{ InstallState::kNotInstalled };
         static inline std::atomic_bool firstThunkObserved_{ false };
+        static inline std::atomic_bool hookLossReported_{ false };
+        static inline std::atomic_bool resetTaskQueued_{ false };
+        static inline std::atomic<std::uint64_t> eventGeneration_{ 1 };
         static inline IRuntimeClient* client_{ nullptr };
         static inline ISceneSource* sceneSource_{ nullptr };
         static inline thread_local std::size_t thunkDepth_{ 0 };

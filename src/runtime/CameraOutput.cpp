@@ -26,6 +26,20 @@ namespace ssc::runtime
             }
             return rotation;
         }
+
+        [[nodiscard]] RE::NiMatrix3 ToCameraRootRotation(
+            const RE::NiMatrix3& a_cameraRotation) noexcept
+        {
+            RE::NiMatrix3 rootRotation;
+            for (std::size_t row = 0; row < 3; ++row) {
+                // Skyrim's camera root uses (right, forward, up), while
+                // NiCamera uses (view-forward, up, right).
+                rootRotation.entry[row][0] = a_cameraRotation.entry[row][2];
+                rootRotation.entry[row][1] = a_cameraRotation.entry[row][0];
+                rootRotation.entry[row][2] = a_cameraRotation.entry[row][1];
+            }
+            return rootRotation;
+        }
     }
 
     RE::NiCamera* CameraOutput::FindNiCamera(RE::NiAVObject* a_object) noexcept
@@ -77,9 +91,11 @@ namespace ssc::runtime
         camera->cameraRoot->world.translate = position;
         niCamera->world.translate = position;
 
-        camera->cameraRoot->local.rotate = RE::NiMatrix3{};
-        camera->cameraRoot->world.rotate = RE::NiMatrix3{};
-        niCamera->world.rotate = ToGameRotation(a_pose.rotation);
+        const auto cameraRotation = ToGameRotation(a_pose.rotation);
+        const auto rootRotation = ToCameraRootRotation(cameraRotation);
+        camera->cameraRoot->local.rotate = rootRotation;
+        camera->cameraRoot->world.rotate = rootRotation;
+        niCamera->world.rotate = cameraRotation;
 
         if (auto* thirdPerson = skyrim_cast<RE::ThirdPersonState*>(camera->currentState.get())) {
             thirdPerson->translation = position;

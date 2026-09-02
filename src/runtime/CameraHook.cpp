@@ -12,6 +12,32 @@ namespace ssc::runtime
             std::uintptr_t slot{ 0 };
             std::uintptr_t original{ 0 };
         };
+
+        class CameraStateSink final : public RE::BSTEventSink<SKSE::CameraEvent>
+        {
+        public:
+            [[nodiscard]] static CameraStateSink* GetSingleton() noexcept
+            {
+                static CameraStateSink singleton;
+                return std::addressof(singleton);
+            }
+
+            RE::BSEventNotifyControl ProcessEvent(
+                const SKSE::CameraEvent* a_event,
+                RE::BSTEventSource<SKSE::CameraEvent>*) override
+            {
+                if (!a_event) {
+                    return RE::BSEventNotifyControl::kContinue;
+                }
+
+                const auto* newState = a_event->newState;
+                if (!newState || (newState->id != RE::CameraState::kThirdPerson &&
+                                     newState->id != RE::CameraState::kAnimated)) {
+                    CameraHook::QueueReset("camera changed to an unsupported state");
+                }
+                return RE::BSEventNotifyControl::kContinue;
+            }
+        };
     }
 
     void CameraHook::Configure(
@@ -22,6 +48,63 @@ namespace ssc::runtime
         sceneSource_ = std::addressof(a_sceneSource);
     }
 
+    bool CameraHook::RegisterCameraStateSink() noexcept
+    {
+        try {
+            auto* source = SKSE::GetCameraEventSource();
+            if (!source) {
+                logger::error("Cannot register camera-state observer: SKSE event source is unavailable");
+                return false;
+            }
+            source->AddEventSink(CameraStateSink::GetSingleton());
+            logger::info("Camera-state observer registered");
+            return true;
+        } catch (...) {
+            HandleBoundaryFailure("camera-state observer registration"sv);
+            return false;
+        }
+    }
+
+    void CameraHook::InvalidatePendingEvents() noexcept
+    {
+        eventGeneration_.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    void CameraHook::QueueReset(std::string_view a_reason) noexcept
+    {
+        auto* client = client_;
+        if (!client) {
+            return;
+        }
+        client->RequestReset();
+
+        bool expected = false;
+        if (!resetTaskQueued_.compare_exchange_strong(
+                expected, true, std::memory_order_acq_rel)) {
+            return;
+        }
+
+        auto* tasks = SKSE::GetTaskInterface();
+        if (!tasks) {
+            resetTaskQueued_.store(false, std::memory_order_release);
+            client->RequestReset();
+            return;
+        }
+
+        try {
+            tasks->AddTask([reason = std::string{ a_reason }] {
+                resetTaskQueued_.store(false, std::memory_order_release);
+                if (auto* runtimeClient = client_) {
+                    runtimeClient->Reset(reason);
+                }
+            });
+        } catch (...) {
+            resetTaskQueued_.store(false, std::memory_order_release);
+            client->RequestReset();
+            HandleBoundaryFailure("camera reset scheduling"sv);
+        }
+    }
+
     void CameraHook::SubmitEvent(SceneEvent a_event)
     {
         auto* tasks = SKSE::GetTaskInterface();
@@ -30,11 +113,10 @@ namespace ssc::runtime
             return;
         }
 
-        const auto generation = SceneEventMailbox::GetSingleton()->CurrentGeneration();
+        const auto generation = eventGeneration_.load(std::memory_order_acquire);
         tasks->AddTask([a_event, generation] {
             try {
-                auto* mailbox = SceneEventMailbox::GetSingleton();
-                if (generation != mailbox->CurrentGeneration()) {
+                if (generation != eventGeneration_.load(std::memory_order_acquire)) {
                     return;
                 }
 
@@ -76,14 +158,17 @@ namespace ssc::runtime
                     }
                 }
 
-                static_cast<void>(mailbox->Enqueue(preparedEvent, generation));
+                if (generation != eventGeneration_.load(std::memory_order_acquire)) {
+                    return;
+                }
+                client->HandleSceneEvent(preparedEvent);
             } catch (const std::exception& exception) {
                 try {
                     logger::critical("Scene event task failed: {}", exception.what());
                 } catch (...) {
                 }
                 if (auto* client = client_) {
-                    client->RequestReset();
+                    client->EmergencyReset();
                 }
             } catch (...) {
                 HandleBoundaryFailure("scene event task"sv);
@@ -120,11 +205,16 @@ namespace ssc::runtime
             return false;
         }
 
-        std::array<HookCandidate, RE::CameraStates::kTotal> candidates{};
+        std::array<HookCandidate, kMaxHookedVtables> candidates{};
         std::size_t candidateCount = 0;
         std::size_t liveStateCount = 0;
         auto& cameraStates = camera->GetRuntimeData().cameraStates;
-        for (auto& statePointer : cameraStates) {
+        constexpr std::array targetStates{
+            RE::CameraState::kAnimated,
+            RE::CameraState::kThirdPerson,
+        };
+        for (const auto stateID : targetStates) {
+            auto& statePointer = cameraStates[stateID];
             auto* cameraState = statePointer.get();
             if (!cameraState) {
                 continue;
@@ -154,6 +244,10 @@ namespace ssc::runtime
                 continue;
             }
 
+            if (candidateCount == candidates.size()) {
+                logger::error("Cannot hook camera-state updates: candidate capacity exceeded");
+                return false;
+            }
             candidates[candidateCount++] = {
                 vtableAddress,
                 vtableAddress + sizeof(std::uintptr_t) * kUpdateSlot,
@@ -168,7 +262,7 @@ namespace ssc::runtime
         }
 
         logger::info(
-            "Collected {} camera state(s) across {} unique vtable(s)",
+            "Collected {} supported camera state(s) across {} unique vtable(s)",
             liveStateCount,
             candidateCount);
 
@@ -288,14 +382,16 @@ namespace ssc::runtime
             }
         }
 
-        auto* mailbox = SceneEventMailbox::GetSingleton();
         auto* client = client_;
-        if (!client || (!mailbox->HasPending() && !client->NeedsUpdate())) {
+        if (!client || !client->NeedsUpdate()) {
             return;
         }
 
         try {
-            mailbox->DispatchPending(*client);
+            if (!IsUpdateHookHealthy()) {
+                client->EmergencyReset();
+                return;
+            }
             if (auto* ui = RE::UI::GetSingleton(); !ui || !ui->GameIsPaused()) {
                 client->Update();
             }
@@ -322,6 +418,29 @@ namespace ssc::runtime
             std::make_index_sequence<kMaxHookedVtables>{});
         return a_index < thunks.size() ?
             SKSE::stl::unrestricted_cast<std::uintptr_t>(thunks[a_index]) : 0;
+    }
+
+    bool CameraHook::IsUpdateHookHealthy() noexcept
+    {
+        if (installState_.load(std::memory_order_acquire) != InstallState::kInstalled) {
+            return false;
+        }
+
+        for (std::size_t index = 0; index < entryCount_; ++index) {
+            const auto slot = entries_[index].slot;
+            const auto expected = GetThunkAddress(index);
+            if (!slot || !expected || *reinterpret_cast<const std::uintptr_t*>(slot) != expected) {
+                bool wasReported = hookLossReported_.exchange(true, std::memory_order_acq_rel);
+                if (!wasReported) {
+                    try {
+                        logger::error("Camera-state Update hook was replaced; camera control is disabled");
+                    } catch (...) {
+                    }
+                }
+                return false;
+            }
+        }
+        return entryCount_ != 0;
     }
 
     void CameraHook::HandleBoundaryFailure(std::string_view a_context) noexcept

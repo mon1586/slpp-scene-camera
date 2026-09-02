@@ -19,7 +19,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 
 option(SSC_BUILD_TESTS "Build unit tests" ON)
-option(SSC_ENABLE_DEBUG_ANCHOR "Show a direction arrow at the scene anchor" ON)
+option(SSC_ENABLE_DEBUG_ANCHOR "Show a direction arrow at the scene anchor" OFF)
 
 # The POC uses a vtable hook and does not allocate a trampoline. Keep CommonLib's
 # own tests and patch-safety-only dependency out of this consumer build.
@@ -27,6 +27,7 @@ set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(SKSE_SUPPORT_PATCH_SAFETY OFF CACHE BOOL "" FORCE)
 
 add_subdirectory(lib/commonlibsse-ng)
+find_package(nlohmann_json CONFIG REQUIRED)
 
 # CommonLibSSE-NG's prebuilt path includes this helper itself. Its source-build
 # fallback currently does not, so consumers must make the helper available.
@@ -39,22 +40,27 @@ set(SSC_SOURCES
     src/SceneCamera.h
     src/SceneSession.h
     src/core/CameraTypes.h
+    src/core/CameraPose.cpp
+    src/core/CameraPose.h
     src/core/SceneAnchor.cpp
     src/core/SceneAnchor.h
     src/runtime/CameraHook.cpp
     src/runtime/CameraHook.h
     src/runtime/CameraOutput.cpp
     src/runtime/CameraOutput.h
+    src/runtime/CameraPoseAdapter.cpp
+    src/runtime/CameraPoseAdapter.h
+    src/runtime/PresetRepository.cpp
+    src/runtime/PresetRepository.h
     src/runtime/ICameraControl.h
     src/runtime/IDebugVisualization.h
+    src/runtime/IPresetProvider.h
     src/runtime/IRuntimeClient.h
     src/runtime/ISceneSource.h
     src/runtime/PluginRuntime.cpp
     src/runtime/PluginRuntime.h
     src/runtime/SceneEvent.h
     src/runtime/SceneParticipantSnapshotStorage.h
-    src/runtime/SceneEventMailbox.cpp
-    src/runtime/SceneEventMailbox.h
     src/runtime/SceneKey.h
     src/runtime/RuntimeTypes.h
     src/runtime/SexLabPSceneSource.cpp
@@ -80,6 +86,12 @@ target_include_directories(
     PRIVATE
         src
         external/smoothcam/SmoothCam/include
+)
+
+target_link_libraries(
+    SexlabSceneCamera
+    PRIVATE
+        nlohmann_json::nlohmann_json
 )
 
 target_compile_definitions(
@@ -119,11 +131,19 @@ if(SSC_BUILD_TESTS)
     add_executable(
         SexlabSceneCameraTests
         tests/SceneSessionTests.cpp
+        src/core/CameraPose.cpp
+        src/core/CameraPose.h
         src/core/SceneAnchor.cpp
         src/core/SceneAnchor.h
+        src/runtime/CameraPoseAdapter.cpp
+        src/runtime/CameraPoseAdapter.h
+        src/runtime/PresetRepository.cpp
+        src/runtime/PresetRepository.h
+        src/runtime/IPresetProvider.h
         src/SceneSession.h
     )
     target_include_directories(SexlabSceneCameraTests PRIVATE src)
+    target_link_libraries(SexlabSceneCameraTests PRIVATE nlohmann_json::nlohmann_json)
     if(MSVC)
         target_compile_options(
             SexlabSceneCameraTests

@@ -3,7 +3,8 @@ param(
     [string] $Configuration = 'RelWithDebInfo',
     [string] $BuildDirectory,
     [switch] $SkipTests,
-    [switch] $TestsOnly
+    [switch] $TestsOnly,
+    [switch] $EnableDebugAnchor
 )
 
 $ErrorActionPreference = 'Stop'
@@ -46,6 +47,7 @@ $installedTriplet = Join-Path $BuildDirectory "vcpkg_installed\$triplet"
 $manifestInstall = if (Test-Path -LiteralPath $installedTriplet -PathType Container) { 'OFF' } else { 'ON' }
 $previousCommonLibPrebuilt = $env:COMMONLIB_PREBUILT
 $env:COMMONLIB_PREBUILT = '1'
+$debugAnchor = if ($EnableDebugAnchor) { 'ON' } else { 'OFF' }
 
 try {
     Invoke-Native $cmake @(
@@ -56,7 +58,8 @@ try {
         "-DCMAKE_TOOLCHAIN_FILE=$toolchain",
         "-DVCPKG_TARGET_TRIPLET=$triplet",
         "-DVCPKG_MANIFEST_INSTALL=$manifestInstall",
-        '-DSSC_BUILD_TESTS=ON'
+        '-DSSC_BUILD_TESTS=ON',
+        "-DSSC_ENABLE_DEBUG_ANCHOR=$debugAnchor"
     )
 
     $targets = if ($TestsOnly) {
@@ -91,6 +94,11 @@ try {
             }
             Copy-Item -LiteralPath $source -Destination (Join-Path $distDirectory $name) -Force
         }
+
+        $presetSource = Join-Path $repoRoot 'data\SKSE\Plugins\SexlabSceneCamera\presets.json'
+        $presetDestination = Join-Path $distDirectory 'SexlabSceneCamera\presets.json'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $presetDestination) -Force | Out-Null
+        Copy-Item -LiteralPath $presetSource -Destination $presetDestination -Force
 
         & (Join-Path $PSScriptRoot 'verify-plugin.ps1') -PluginDirectory $distDirectory
     }

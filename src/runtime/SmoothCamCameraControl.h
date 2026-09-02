@@ -21,7 +21,7 @@ namespace ssc::runtime
         [[nodiscard]] bool StillOwnsCamera() const noexcept override;
         [[nodiscard]] bool OwnsCamera() const noexcept override;
         [[nodiscard]] CameraApplyResult Apply(const CameraPose& a_pose) override;
-        void Release() override;
+        [[nodiscard]] CameraReleaseResult Release() override;
         [[nodiscard]] bool EmergencyRelease() noexcept override;
 
     private:

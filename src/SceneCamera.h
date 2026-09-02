@@ -2,9 +2,11 @@
 
 #include "runtime/ICameraControl.h"
 #include "runtime/IDebugVisualization.h"
+#include "runtime/IPresetProvider.h"
 #include "runtime/IRuntimeClient.h"
 #include "runtime/ISceneSource.h"
 #include "SceneSession.h"
+#include "core/CameraPose.h"
 #include "core/SceneAnchor.h"
 
 namespace ssc
@@ -16,6 +18,7 @@ namespace ssc
 
         void Configure(
             runtime::ISceneSource& a_sceneSource,
+            runtime::IPresetProvider& a_presetProvider,
             runtime::ICameraControl& a_cameraControl,
             runtime::IDebugVisualization& a_debugVisualization) noexcept;
 
@@ -41,6 +44,7 @@ namespace ssc
         void Clear() noexcept;
 
         runtime::ISceneSource* sceneSource_{ nullptr };
+        runtime::IPresetProvider* presetProvider_{ nullptr };
         runtime::ICameraControl* cameraControl_{ nullptr };
         runtime::IDebugVisualization* debugVisualization_{ nullptr };
         SceneSession session_;
@@ -48,9 +52,11 @@ namespace ssc
         std::chrono::steady_clock::time_point activeSince_{};
         std::chrono::steady_clock::time_point anchorCaptureReadyAt_{};
         std::atomic_bool resetRequested_{ false };
-        std::atomic_bool sessionActive_{ false };
         std::atomic_bool anchorCapturePending_{ false };
+        std::atomic_bool cameraPoseActive_{ false };
         std::optional<core::SceneAnchor> anchor_;
+        std::optional<runtime::CameraPose> cameraPose_;
         core::SceneAnchorCalculator anchorCalculator_;
+        core::CameraPoseCalculator poseCalculator_;
     };
 }

@@ -1,5 +1,9 @@
 #include "runtime/SmoothCamCameraControl.h"
 
+#include "runtime/CameraHook.h"
+
+#include <REX/W32/KERNEL32.h>
+
 namespace ssc::runtime
 {
     namespace
@@ -23,6 +27,11 @@ namespace ssc::runtime
             default:
                 return "Unknown"sv;
             }
+        }
+
+        [[nodiscard]] bool IsAPIThread(const SmoothCamAPI::IVSmoothCam2& a_api) noexcept
+        {
+            return a_api.GetSmoothCamThreadId() == REX::W32::GetCurrentThreadId();
         }
     }
 
@@ -86,7 +95,8 @@ namespace ssc::runtime
     bool SmoothCamCameraControl::CanAcquire() const noexcept
     {
         const auto* api = api_.load(std::memory_order_acquire);
-        return api && api->IsCameraEnabled();
+        return api && IsAPIThread(*api) && api->IsCameraEnabled() &&
+               CameraHook::IsUpdateHookHealthy();
     }
 
     bool SmoothCamCameraControl::Acquire()
@@ -99,6 +109,18 @@ namespace ssc::runtime
         if (!api->IsCameraEnabled()) {
             logger::warn("Cannot acquire camera: SmoothCam is disabled");
             return false;
+        }
+        if (!IsAPIThread(*api)) {
+            logger::error("Cannot acquire camera: call is not on SmoothCam's API thread");
+            return false;
+        }
+        if (!CameraHook::IsUpdateHookHealthy()) {
+            logger::error("Cannot acquire camera: camera update hook is unavailable");
+            return false;
+        }
+
+        if (ownsCamera_.load(std::memory_order_acquire)) {
+            return StillOwnsCamera();
         }
 
         const auto pluginHandle = SKSE::GetPluginHandle();
@@ -114,16 +136,7 @@ namespace ssc::runtime
         }
 
         ownsCamera_.store(true, std::memory_order_release);
-        const auto updateResult = api->RequestInterpolatorUpdates(pluginHandle, true);
-        logger::info("SmoothCam RequestInterpolatorUpdates(true) -> {}", ResultName(updateResult));
-        if (updateResult == SmoothCamAPI::APIResult::OK) {
-            return true;
-        }
-
-        const auto releaseResult = api->ReleaseCameraControl(pluginHandle);
-        logger::warn("Interpolator updates were refused; ReleaseCameraControl -> {}", ResultName(releaseResult));
-        ownsCamera_.store(false, std::memory_order_release);
-        return false;
+        return true;
     }
 
     bool SmoothCamCameraControl::StillOwnsCamera() const noexcept
@@ -133,7 +146,8 @@ namespace ssc::runtime
         }
 
         const auto* api = api_.load(std::memory_order_acquire);
-        return api && api->GetCameraOwner() == SKSE::GetPluginHandle();
+        return api && IsAPIThread(*api) &&
+               api->GetCameraOwner() == SKSE::GetPluginHandle();
     }
 
     bool SmoothCamCameraControl::OwnsCamera() const noexcept
@@ -143,19 +157,37 @@ namespace ssc::runtime
 
     CameraApplyResult SmoothCamCameraControl::Apply(const CameraPose& a_pose)
     {
+        auto* api = api_.load(std::memory_order_acquire);
+        if (!api || !ownsCamera_.load(std::memory_order_acquire)) {
+            ownsCamera_.store(false, std::memory_order_release);
+            return CameraApplyResult::kNotOwner;
+        }
+        if (!IsAPIThread(*api)) {
+            return CameraApplyResult::kWrongThread;
+        }
+        if (api->GetCameraOwner() != SKSE::GetPluginHandle()) {
+            ownsCamera_.store(false, std::memory_order_release);
+            return CameraApplyResult::kNotOwner;
+        }
+        if (!CameraHook::IsUpdateHookHealthy()) {
+            return CameraApplyResult::kUpdatePathUnavailable;
+        }
         return output_.Apply(a_pose);
     }
 
-    void SmoothCamCameraControl::Release()
+    CameraReleaseResult SmoothCamCameraControl::Release()
     {
         if (!ownsCamera_.load(std::memory_order_acquire)) {
-            return;
+            return CameraReleaseResult::kNoOwnership;
         }
         auto* api = api_.load(std::memory_order_acquire);
         if (!api) {
             logger::error("SmoothCam interface disappeared while camera ownership was active");
             ownsCamera_.store(false, std::memory_order_release);
-            return;
+            return CameraReleaseResult::kNoOwnership;
+        }
+        if (!IsAPIThread(*api)) {
+            return CameraReleaseResult::kWrongThread;
         }
 
         const auto pluginHandle = SKSE::GetPluginHandle();
@@ -163,7 +195,7 @@ namespace ssc::runtime
         if (owner != pluginHandle) {
             logger::warn("SmoothCam reports another camera owner while restoring (owner={})", owner);
             ownsCamera_.store(false, std::memory_order_release);
-            return;
+            return CameraReleaseResult::kNoOwnership;
         }
 
         const auto goalResult = api->SendToGoalPosition(
@@ -172,7 +204,13 @@ namespace ssc::runtime
 
         const auto releaseResult = api->ReleaseCameraControl(pluginHandle);
         logger::info("SmoothCam ReleaseCameraControl -> {}", ResultName(releaseResult));
-        ownsCamera_.store(false, std::memory_order_release);
+        if (releaseResult == SmoothCamAPI::APIResult::OK ||
+            releaseResult == SmoothCamAPI::APIResult::NotOwner) {
+            ownsCamera_.store(false, std::memory_order_release);
+            return releaseResult == SmoothCamAPI::APIResult::OK ?
+                CameraReleaseResult::kReleased : CameraReleaseResult::kNoOwnership;
+        }
+        return CameraReleaseResult::kFailed;
     }
 
     bool SmoothCamCameraControl::EmergencyRelease() noexcept
@@ -183,7 +221,14 @@ namespace ssc::runtime
 
         auto* api = api_.load(std::memory_order_acquire);
         const auto pluginHandle = SKSE::GetPluginHandle();
-        if (!api || api->GetCameraOwner() != pluginHandle) {
+        if (!api) {
+            ownsCamera_.store(false, std::memory_order_release);
+            return true;
+        }
+        if (!IsAPIThread(*api)) {
+            return false;
+        }
+        if (api->GetCameraOwner() != pluginHandle) {
             ownsCamera_.store(false, std::memory_order_release);
             return true;
         }

@@ -11,6 +11,5 @@ namespace ssc::runtime
 
     private:
         [[nodiscard]] static RE::NiCamera* FindNiCamera(RE::NiAVObject* a_object) noexcept;
-
     };
 }

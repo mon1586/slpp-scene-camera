@@ -1,5 +1,7 @@
 #include "SceneCamera.h"
 
+#include "runtime/CameraPoseAdapter.h"
+
 namespace ssc
 {
     namespace
@@ -16,6 +18,27 @@ namespace ssc
         {
             return { a_value.x, a_value.y, a_value.z };
         }
+
+        [[nodiscard]] std::string_view ApplyResultName(
+            runtime::CameraApplyResult a_result) noexcept
+        {
+            switch (a_result) {
+            case runtime::CameraApplyResult::kApplied:
+                return "applied"sv;
+            case runtime::CameraApplyResult::kUnsupportedState:
+                return "unsupported camera state"sv;
+            case runtime::CameraApplyResult::kMissingCamera:
+                return "missing camera"sv;
+            case runtime::CameraApplyResult::kNotOwner:
+                return "camera ownership lost"sv;
+            case runtime::CameraApplyResult::kWrongThread:
+                return "wrong SmoothCam API thread"sv;
+            case runtime::CameraApplyResult::kUpdatePathUnavailable:
+                return "camera update hook unavailable"sv;
+            default:
+                return "unknown failure"sv;
+            }
+        }
     }
 
     SceneCamera* SceneCamera::GetSingleton() noexcept
@@ -26,18 +49,20 @@ namespace ssc
 
     void SceneCamera::Configure(
         runtime::ISceneSource& a_sceneSource,
+        runtime::IPresetProvider& a_presetProvider,
         runtime::ICameraControl& a_cameraControl,
         runtime::IDebugVisualization& a_debugVisualization) noexcept
     {
         sceneSource_ = std::addressof(a_sceneSource);
+        presetProvider_ = std::addressof(a_presetProvider);
         cameraControl_ = std::addressof(a_cameraControl);
         debugVisualization_ = std::addressof(a_debugVisualization);
     }
 
     bool SceneCamera::NeedsUpdate() const noexcept
     {
-        return sessionActive_.load(std::memory_order_acquire) ||
-               anchorCapturePending_.load(std::memory_order_acquire) ||
+        return anchorCapturePending_.load(std::memory_order_acquire) ||
+               cameraPoseActive_.load(std::memory_order_acquire) ||
                resetRequested_.load(std::memory_order_acquire);
     }
 
@@ -80,7 +105,11 @@ namespace ssc
             return;
         }
 
-        static_cast<void>(session_.Prepare(a_key));
+        if (!session_.Prepare(a_key)) {
+            logger::info("Ignoring overlapping scene {:08X}/{} while another scene is pending",
+                a_key.sourceID, a_key.instanceID);
+            return;
+        }
         participants_ = a_participants;
         logger::info("Scene {:08X}/{} prepared with {} participant(s)",
             a_key.sourceID, a_key.instanceID, participants_.Count());
@@ -119,7 +148,6 @@ namespace ssc
         if (!session_.Activate(a_event.key)) {
             return;
         }
-        sessionActive_.store(true, std::memory_order_release);
         anchorCaptureReadyAt_ = std::chrono::steady_clock::now();
         anchorCapturePending_.store(true, std::memory_order_release);
         activeSince_ = anchorCaptureReadyAt_;
@@ -181,6 +209,22 @@ namespace ssc
             Restore("scene watchdog timeout"sv);
             return;
         }
+
+        if (cameraPose_) {
+            if (!cameraControl_ || !cameraControl_->StillOwnsCamera()) {
+                logger::warn("SmoothCam camera ownership was lost; preset pose was discarded");
+                Restore("camera ownership check failed"sv);
+                return;
+            } else {
+                const auto applyResult = cameraControl_->Apply(*cameraPose_);
+                if (applyResult != runtime::CameraApplyResult::kApplied) {
+                    logger::error("Could not maintain preset camera pose: {}",
+                        ApplyResultName(applyResult));
+                    Restore("preset camera pose could not be maintained"sv);
+                    return;
+                }
+            }
+        }
         if (!anchorCapturePending_.load(std::memory_order_acquire)) {
             return;
         }
@@ -231,21 +275,94 @@ namespace ssc
             anchor_->forward.y,
             anchor_->forward.z);
 
-        // No preset/raycast camera pose exists yet. Do not place the camera at the
-        // anchor (which is inside the participants) or invent an arbitrary offset.
-        // Leave camera control unchanged until pose selection is added.
+        const auto snapshot = presetProvider_ ? presetProvider_->Snapshot() : nullptr;
+        if (!snapshot || snapshot->empty()) {
+            logger::warn("No valid camera preset is available; SmoothCam remains in control");
+            return;
+        }
+
+        const auto& preset = snapshot->front();
+        const auto corePose = poseCalculator_.Evaluate(
+            *anchor_,
+            {
+                preset.offset.right,
+                preset.offset.forward,
+                preset.offset.up,
+            });
+        if (!corePose) {
+            logger::error("Camera pose generation failed for preset '{}'", preset.id);
+            Restore("camera pose generation failed"sv);
+            return;
+        }
+
+        if (!cameraControl_) {
+            logger::error("Camera control is unavailable; SmoothCam remains in control");
+            return;
+        }
+
+        if (cameraControl_->OwnsCamera() && !cameraControl_->StillOwnsCamera()) {
+            logger::warn("SmoothCam camera ownership was lost before pose replacement");
+            Restore("camera ownership check failed before pose replacement"sv);
+            return;
+        }
+
+        const auto acquiredNow = !cameraControl_->OwnsCamera();
+        if (acquiredNow) {
+            if (!cameraControl_->CanAcquire()) {
+                logger::warn("SmoothCam cannot currently yield camera control");
+                return;
+            }
+            if (!cameraControl_->Acquire()) {
+                logger::warn("SmoothCam camera-control acquisition failed");
+                return;
+            }
+        }
+
+        const auto runtimePose = runtime::ToRuntimeCameraPose(*corePose);
+        const auto applyResult = cameraControl_->Apply(runtimePose);
+        if (applyResult != runtime::CameraApplyResult::kApplied) {
+            logger::error("Could not apply camera preset '{}': {}",
+                preset.id,
+                ApplyResultName(applyResult));
+            Restore(acquiredNow ?
+                "initial camera pose apply failed"sv :
+                "replacement camera pose apply failed"sv);
+            return;
+        }
+
+        cameraPose_ = runtimePose;
+        cameraPoseActive_.store(true, std::memory_order_release);
+        logger::info(
+            "Camera preset '{}' applied at ({:.2f}, {:.2f}, {:.2f})",
+            preset.id,
+            runtimePose.position.x,
+            runtimePose.position.y,
+            runtimePose.position.z);
     }
 
     void SceneCamera::Restore(std::string_view a_reason)
     {
-        if (session_.IsIdle()) {
+        const auto hadSession = !session_.IsIdle();
+        const auto hadCameraOwnership = cameraControl_ && cameraControl_->OwnsCamera();
+        if (!hadSession && !hadCameraOwnership) {
             return;
         }
 
-        session_.BeginRestore();
-        logger::info("Discarding scene anchor: {}", a_reason);
-        if (cameraControl_ && cameraControl_->OwnsCamera()) {
-            cameraControl_->Release();
+        if (hadCameraOwnership) {
+            const auto releaseResult = cameraControl_->Release();
+            if (releaseResult == runtime::CameraReleaseResult::kWrongThread) {
+                resetRequested_.store(true, std::memory_order_release);
+                return;
+            }
+            if (releaseResult == runtime::CameraReleaseResult::kFailed) {
+                logger::error("Camera release did not complete; reset will be retried");
+                resetRequested_.store(true, std::memory_order_release);
+                return;
+            }
+        }
+        if (hadSession) {
+            session_.BeginRestore();
+            logger::info("Discarding scene anchor: {}", a_reason);
         }
         Clear();
         logger::info("Scene camera IDLE");
@@ -264,8 +381,9 @@ namespace ssc
 
     void SceneCamera::EmergencyReset() noexcept
     {
-        if (cameraControl_) {
-            static_cast<void>(cameraControl_->EmergencyRelease());
+        if (cameraControl_ && !cameraControl_->EmergencyRelease()) {
+            resetRequested_.store(true, std::memory_order_release);
+            return;
         }
         resetRequested_.store(false, std::memory_order_release);
         Clear();
@@ -286,13 +404,14 @@ namespace ssc
 
     void SceneCamera::Clear() noexcept
     {
-        sessionActive_.store(false, std::memory_order_release);
         participants_ = {};
         anchorCapturePending_.store(false, std::memory_order_release);
+        cameraPoseActive_.store(false, std::memory_order_release);
         anchorCaptureReadyAt_ = {};
         if (debugVisualization_) {
             debugVisualization_->HideAnchor();
         }
+        cameraPose_.reset();
         anchor_.reset();
         session_.Clear();
     }

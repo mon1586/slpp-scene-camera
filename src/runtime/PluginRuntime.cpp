@@ -1,12 +1,18 @@
 #include "runtime/PluginRuntime.h"
 
 #include "runtime/CameraHook.h"
-#include "runtime/SceneEventMailbox.h"
+#include "runtime/PresetRepository.h"
 #include "runtime/SexLabPSceneSource.h"
 #include "runtime/SmoothCamCameraControl.h"
 
 namespace ssc::runtime
 {
+    namespace
+    {
+        constexpr auto kPresetRelativePath =
+            "Data/SKSE/Plugins/SexlabSceneCamera/presets.json"sv;
+    }
+
     void PluginRuntime::InitializeLog()
     {
         auto logDirectory = SKSE::log::log_directory();
@@ -37,10 +43,8 @@ namespace ssc::runtime
 
     void PluginRuntime::QueueLifecycleReset(std::string_view a_reason)
     {
-        SceneEventMailbox::GetSingleton()->BeginNewGeneration();
-        if (client_) {
-            client_->RequestReset();
-        }
+        CameraHook::InvalidatePendingEvents();
+        CameraHook::QueueReset(a_reason);
         logger::info("Camera reset requested: {}", a_reason);
     }
 
@@ -62,10 +66,29 @@ namespace ssc::runtime
                     SmoothCamCameraControl::GetSingleton()->RequestAPI(messaging));
                 break;
             case SKSE::MessagingInterface::kDataLoaded:
+            {
+                const auto gameDirectory =
+                    std::filesystem::path{ REL::Module::get().filePath() }.parent_path();
+                const auto presetPath = gameDirectory / kPresetRelativePath;
+                const auto loadResult =
+                    PresetRepository::GetSingleton()->LoadFromFile(presetPath);
+                if (loadResult.succeeded) {
+                    logger::info("Loaded {} camera preset(s) from {}",
+                        loadResult.presetCount,
+                        presetPath.string());
+                } else {
+                    logger::error("Could not load camera presets from {}: {}",
+                        presetPath.string(),
+                        loadResult.error);
+                }
+                if (!CameraHook::RegisterCameraStateSink()) {
+                    logger::warn("Camera-state observer is unavailable");
+                }
                 if (!SexLabPSceneSource::GetSingleton()->Register(CameraHook::SubmitEvent)) {
                     logger::warn("No scene source was registered");
                 }
                 break;
+            }
             case SKSE::MessagingInterface::kPreLoadGame:
                 QueueLifecycleReset("pre-load game"sv);
                 break;
@@ -83,13 +106,9 @@ namespace ssc::runtime
                 logger::critical("SKSE message handler failed: {}", exception.what());
             } catch (...) {
             }
-            if (client_) {
-                client_->RequestReset();
-            }
+            CameraHook::QueueReset("SKSE message handler failure");
         } catch (...) {
-            if (client_) {
-                client_->RequestReset();
-            }
+            CameraHook::QueueReset("unknown SKSE message handler failure");
         }
     }
 }

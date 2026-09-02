@@ -21,6 +21,7 @@ namespace ssc
         [[nodiscard]] bool IsIdle() const noexcept { return state_ == State::kIdle; }
         [[nodiscard]] bool IsPreparing() const noexcept { return state_ == State::kPreparing; }
         [[nodiscard]] bool IsActive() const noexcept { return state_ == State::kActive; }
+        [[nodiscard]] bool IsRestoring() const noexcept { return state_ == State::kRestoring; }
         [[nodiscard]] bool Matches(const runtime::SceneKey& a_key) const noexcept
         {
             return key_.has_value() && *key_ == a_key;
@@ -28,7 +29,10 @@ namespace ssc
 
         [[nodiscard]] bool Prepare(const runtime::SceneKey& a_key) noexcept
         {
-            if (IsActive()) {
+            if (IsPreparing()) {
+                return Matches(a_key);
+            }
+            if (!IsIdle()) {
                 return false;
             }
             key_ = a_key;
