@@ -58,6 +58,16 @@ SKSEイベントsinkでは入力の検証とイベント変換だけを行う。
 
 Runtimeは`src`が更新を必要としている間だけ後段処理を呼ぶ。active scene中はwatchdogを維持するため更新を継続する。ポーズ中は更新を通知しない。待機期限がポーズ中に経過した場合、実際の入力取得と計算はポーズ解除後の最初の更新になる。
 
+### Camera update hookのライフサイクル
+
+camera-state update hookは、最初のプレイヤー参加scene開始時に一度だけ設置する。以後はcamera event、scene開始、camera state変更を契機とした再hookを行わず、scene終了、ロード、新規ゲームでも解除しない。active scene外ではhookを残し、mailboxと`NeedsUpdate()`の確認だけで後段処理を終了する。
+
+以前の実装が行っていたcamera eventごとのrefreshと複数世代のSSC chain保持には、同等の先例と必要性を確認できなかった。特定イベントまたは一時的な状態でだけ本処理を行う既存SKSE Modも、一度設置したhookを保持して不要時にoriginalへ流す方式を採用しているため、この疑義を解消する形で一度だけの設置へ変更した。
+
+詳細は[`hook-spec.md`](hook-spec.md)に記載する。
+
+設置後はSexLab P+イベントが発火していない時もcamera updateごとにthunk自体は呼ばれる。ただしinactive pathではoriginal chain、re-entry depth、mailbox、更新要求の確認以外を行わない。
+
 ## カメラ出力
 
 カメラ制御はSmoothCamの公開APIを通して取得・更新・解放する。
@@ -90,7 +100,7 @@ Runtimeは`src`が更新を必要としている間だけ後段処理を呼ぶ�
 - mailboxが満杯になった場合は保留通知を破棄し、次のcamera updateで`src`へresetを要求する。
 - ロードまたは新規ゲームではmailboxの世代を更新し、古いtaskと通知を無効化する。
 - Runtime境界で例外が発生した場合、通常はatomicなreset要求だけを`src`へ渡し、外部状態の変更を次のcamera update境界まで遅延する。camera update境界自体が失敗した場合だけ、その安全境界内で緊急解放とstate破棄を行う。
-- camera-state hookのchain枠を安全に再利用できない失敗が発生した場合は、既存chainを維持したまま以後のrefreshを停止し、枠の反復消費を防ぐ。
+- camera-state hookのbatch設置に失敗した場合は、書き込み済みslotを検証付きでrollbackし、状態を`Failed`として以後の設置を行わない。rollbackできず残留したthunkはoriginalだけを呼ぶ。
 - scene keyが一致するか、通知を採用するか、処理を終了するかは`src`が判断する。
 
 ## 現在扱わないもの

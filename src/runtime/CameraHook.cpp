@@ -6,34 +6,6 @@ namespace ssc::runtime
     {
         constexpr std::size_t kUpdateSlot = 0x03;
 
-        class CameraEventSink final : public RE::BSTEventSink<SKSE::CameraEvent>
-        {
-        public:
-            static CameraEventSink* GetSingleton() noexcept
-            {
-                static CameraEventSink singleton;
-                return std::addressof(singleton);
-            }
-
-            RE::BSEventNotifyControl ProcessEvent(
-                const SKSE::CameraEvent*,
-                RE::BSTEventSource<SKSE::CameraEvent>*) override
-            {
-                try {
-                    auto* mailbox = SceneEventMailbox::GetSingleton();
-                    auto* client = CameraHook::GetClient();
-                    if (client && (client->NeedsUpdate() || mailbox->HasPending())) {
-                        CameraHook::QueueRefresh();
-                    }
-                } catch (...) {
-                    if (auto* client = CameraHook::GetClient()) {
-                        client->RequestReset();
-                    }
-                }
-                return RE::BSEventNotifyControl::kContinue;
-            }
-        };
-
         struct HookCandidate
         {
             std::uintptr_t vtable{ 0 };
@@ -48,11 +20,6 @@ namespace ssc::runtime
     {
         client_ = std::addressof(a_client);
         sceneSource_ = std::addressof(a_sceneSource);
-    }
-
-    bool CameraHook::IsInstalled() noexcept
-    {
-        return installed_.load(std::memory_order_acquire);
     }
 
     void CameraHook::SubmitEvent(SceneEvent a_event)
@@ -87,17 +54,25 @@ namespace ssc::runtime
                     }
                     preparedEvent.participants = sceneSource->CollectParticipants(preparedEvent.key);
                 }
-                if (!IsInstalled()) {
+
+                const auto installState = installState_.load(std::memory_order_acquire);
+                if (installState == InstallState::kFailed) {
+                    return;
+                }
+                if (installState == InstallState::kNotInstalled) {
                     if (!isStartEvent) {
                         return;
                     }
-                    if (!InstallOrRefresh()) {
-                        logger::error("Ignoring scene: camera-state update hook is unavailable");
+                    if (!preparedEvent.participants.ContainsPlayer()) {
+                        logger::info(
+                            "Ignoring scene {:08X}/{} before hook installation: player is not a participant",
+                            preparedEvent.key.sourceID,
+                            preparedEvent.key.instanceID);
                         return;
                     }
-                } else if (isStartEvent) {
-                    if (!InstallOrRefresh()) {
-                        logger::warn("Camera-state hook refresh was incomplete; existing hooks remain active");
+                    if (!InstallOnce(preparedEvent.key)) {
+                        logger::error("Ignoring scene: camera-state update hook is unavailable");
+                        return;
                     }
                 }
 
@@ -116,64 +91,56 @@ namespace ssc::runtime
         });
     }
 
-    void CameraHook::QueueRefresh()
+    bool CameraHook::InstallOnce(const SceneKey& a_key)
     {
-        if (!IsInstalled() ||
-            refreshDisabled_.load(std::memory_order_acquire) ||
-            refreshQueued_.exchange(true, std::memory_order_acq_rel)) {
-            return;
+        const auto state = installState_.load(std::memory_order_acquire);
+        if (state != InstallState::kNotInstalled) {
+            return state == InstallState::kInstalled;
         }
 
-        auto* tasks = SKSE::GetTaskInterface();
-        if (!tasks) {
-            refreshQueued_.store(false, std::memory_order_release);
-            return;
-        }
+        SKSE::stl::scope_exit markFailed{ []() noexcept {
+            installState_.store(InstallState::kFailed, std::memory_order_release);
+        } };
 
-        try {
-            tasks->AddTask([] {
-                refreshQueued_.store(false, std::memory_order_release);
-                try {
-                    if (!InstallOrRefresh()) {
-                        logger::warn("Camera-state hook refresh failed");
-                    }
-                } catch (...) {
-                    HandleBoundaryFailure("camera-state hook refresh"sv);
-                }
-            });
-        } catch (...) {
-            refreshQueued_.store(false, std::memory_order_release);
-            throw;
-        }
-    }
+        logger::info(
+            "Installing camera-state Update hook for scene {:08X}/{}",
+            a_key.sourceID,
+            a_key.instanceID);
 
-    bool CameraHook::InstallOrRefresh()
-    {
-        std::scoped_lock lock{ installMutex_ };
-        if (refreshDisabled_.load(std::memory_order_acquire)) {
-            return IsInstalled();
+        if (!client_ || !sceneSource_) {
+            logger::error("Cannot install camera-state updates: runtime dependencies are unavailable");
+            installState_.store(InstallState::kFailed, std::memory_order_release);
+            return false;
         }
 
         auto* camera = RE::PlayerCamera::GetSingleton();
         if (!camera) {
             logger::error("Cannot hook camera-state updates: PlayerCamera is unavailable");
+            installState_.store(InstallState::kFailed, std::memory_order_release);
             return false;
         }
 
         std::array<HookCandidate, RE::CameraStates::kTotal> candidates{};
         std::size_t candidateCount = 0;
+        std::size_t liveStateCount = 0;
         auto& cameraStates = camera->GetRuntimeData().cameraStates;
         for (auto& statePointer : cameraStates) {
-            auto* state = statePointer.get();
-            if (!state) {
+            auto* cameraState = statePointer.get();
+            if (!cameraState) {
                 continue;
             }
+            ++liveStateCount;
 
-            auto* vtable = *reinterpret_cast<std::uintptr_t**>(state);
+            auto* vtable = *reinterpret_cast<std::uintptr_t**>(cameraState);
+            if (!vtable) {
+                logger::error("Cannot hook camera state: vtable is null");
+                return false;
+            }
             const auto vtableAddress = reinterpret_cast<std::uintptr_t>(vtable);
             const auto current = vtable[kUpdateSlot];
-            if (!current || IsThunkAddress(current)) {
-                continue;
+            if (!current) {
+                logger::error("Cannot hook camera state: Update pointer is null");
+                return false;
             }
 
             bool duplicate = false;
@@ -195,39 +162,50 @@ namespace ssc::runtime
         }
 
         if (candidateCount == 0) {
-            return IsInstalled();
-        }
-        if (candidateCount > kMaxHookedVtables - nextIndex_) {
-            refreshDisabled_.store(true, std::memory_order_release);
-            logger::error(
-                "Cannot extend camera-state hook chain: capacity exhausted; further refreshes are disabled");
+            logger::error("Cannot hook camera-state updates: no live camera state vtables were found");
+            installState_.store(InstallState::kFailed, std::memory_order_release);
             return false;
         }
 
-        const auto firstIndex = nextIndex_;
-        std::size_t patchedCount = 0;
-        for (std::size_t candidateIndex = 0; candidateIndex < candidateCount; ++candidateIndex) {
-            const auto hookIndex = firstIndex + candidateIndex;
-            const auto& candidate = candidates[candidateIndex];
-            const auto thunkAddress = GetThunkAddress(hookIndex);
-            const auto original = SKSE::stl::unrestricted_cast<UpdateFunction>(candidate.original);
+        logger::info(
+            "Collected {} camera state(s) across {} unique vtable(s)",
+            liveStateCount,
+            candidateCount);
 
-            entries_[hookIndex] = { candidate.vtable, candidate.slot };
-            originals_[hookIndex].store(original, std::memory_order_release);
+        for (std::size_t index = 0; index < candidateCount; ++index) {
+            const auto& candidate = candidates[index];
+            const auto original = SKSE::stl::unrestricted_cast<UpdateFunction>(candidate.original);
+            const auto thunkAddress = GetThunkAddress(index);
+            if (!original || !thunkAddress) {
+                logger::error("Cannot publish camera-state hook entry {}", index);
+                for (std::size_t clearIndex = 0; clearIndex <= index; ++clearIndex) {
+                    originals_[clearIndex].store(nullptr, std::memory_order_release);
+                    entries_[clearIndex] = {};
+                }
+                installState_.store(InstallState::kFailed, std::memory_order_release);
+                return false;
+            }
+            entries_[index] = { candidate.vtable, candidate.slot };
+            originals_[index].store(original, std::memory_order_release);
+        }
+
+        std::size_t patchedCount = 0;
+        for (std::size_t index = 0; index < candidateCount; ++index) {
+            const auto& candidate = candidates[index];
+            const auto thunkAddress = GetThunkAddress(index);
             if (!REL::safe_write(
                     candidate.slot,
                     std::addressof(thunkAddress),
                     sizeof(thunkAddress),
                     std::addressof(candidate.original),
                     sizeof(candidate.original))) {
-                originals_[hookIndex].store(nullptr, std::memory_order_release);
-                entries_[hookIndex] = {};
                 logger::error("Camera-state update hook verification failed for vtable {:X}",
                     candidate.vtable);
 
                 bool rollbackComplete = true;
+                std::size_t retainedCount = 0;
                 for (std::size_t rollbackOffset = patchedCount; rollbackOffset > 0; --rollbackOffset) {
-                    const auto rollbackIndex = firstIndex + rollbackOffset - 1;
+                    const auto rollbackIndex = rollbackOffset - 1;
                     const auto rollbackThunk = GetThunkAddress(rollbackIndex);
                     const auto rollbackOriginal = SKSE::stl::unrestricted_cast<std::uintptr_t>(
                         originals_[rollbackIndex].load(std::memory_order_acquire));
@@ -238,38 +216,36 @@ namespace ssc::runtime
                             std::addressof(rollbackThunk),
                             sizeof(rollbackThunk))) {
                         rollbackComplete = false;
+                        ++retainedCount;
+                    } else {
+                        originals_[rollbackIndex].store(nullptr, std::memory_order_release);
+                        entries_[rollbackIndex] = {};
                     }
                 }
 
-                nextIndex_ = firstIndex + patchedCount;
-                refreshDisabled_.store(true, std::memory_order_release);
+                for (std::size_t clearIndex = patchedCount; clearIndex < candidateCount; ++clearIndex) {
+                    originals_[clearIndex].store(nullptr, std::memory_order_release);
+                    entries_[clearIndex] = {};
+                }
+
+                entryCount_ = retainedCount;
+                installState_.store(InstallState::kFailed, std::memory_order_release);
                 if (rollbackComplete) {
-                    logger::warn("Camera-state hook batch was rolled back; {} published chain slot(s) remain reserved and further refreshes are disabled",
-                        patchedCount);
+                    logger::warn("Camera-state hook batch was rolled back; hook installation is disabled");
                 } else {
-                    installed_.store(true, std::memory_order_release);
-                    logger::critical("Camera-state hook rollback was incomplete; retained safe chains for {} slot(s)",
-                        patchedCount);
+                    logger::critical(
+                        "Camera-state hook rollback was incomplete; {} original-only thunk(s) remain",
+                        retainedCount);
                 }
                 return false;
             }
             ++patchedCount;
         }
 
-        nextIndex_ += candidateCount;
-        installed_.store(true, std::memory_order_release);
-
-        if (!cameraEventSinkRegistered_) {
-            if (auto* source = SKSE::GetCameraEventSource()) {
-                source->AddEventSink(CameraEventSink::GetSingleton());
-                cameraEventSinkRegistered_ = true;
-            } else {
-                logger::warn("SKSE camera event source is unavailable; hooks will refresh at scene start only");
-            }
-        }
-
-        logger::info("Camera-state Update hook installed/refreshed on {} vtable(s) ({} chain(s) retained)",
-            candidateCount, nextIndex_);
+        entryCount_ = candidateCount;
+        installState_.store(InstallState::kInstalled, std::memory_order_release);
+        logger::info("Camera-state Update hook installed once on {} unique vtable(s)", entryCount_);
+        markFailed.release();
         return true;
     }
 
@@ -280,7 +256,7 @@ namespace ssc::runtime
     {
         const auto original = originals_[Index].load(std::memory_order_acquire);
         if (!original) {
-            HandleBoundaryFailure("camera-state hook missing original"sv);
+            HandleUpdateFailure("camera-state hook missing original"sv);
             return;
         }
 
@@ -293,10 +269,23 @@ namespace ssc::runtime
         }
         --thunkDepth_;
 
-        // A later camera mod may chain a new hook to an older SSC thunk. Only the
-        // outermost SSC thunk performs post-update work, after that whole chain.
         if (entryDepth != 0) {
             return;
+        }
+
+        if (installState_.load(std::memory_order_acquire) != InstallState::kInstalled) {
+            return;
+        }
+
+        if (!firstThunkObserved_.load(std::memory_order_relaxed)) {
+            bool expected = false;
+            if (firstThunkObserved_.compare_exchange_strong(
+                    expected, true, std::memory_order_relaxed)) {
+                try {
+                    logger::info("Camera-state Update hook reached its first update");
+                } catch (...) {
+                }
+            }
         }
 
         auto* mailbox = SceneEventMailbox::GetSingleton();
@@ -317,7 +306,7 @@ namespace ssc::runtime
             }
             client->EmergencyReset();
         } catch (...) {
-            HandleBoundaryFailure("camera-state update"sv);
+            HandleUpdateFailure("camera-state update"sv);
         }
     }
 
@@ -335,16 +324,6 @@ namespace ssc::runtime
             SKSE::stl::unrestricted_cast<std::uintptr_t>(thunks[a_index]) : 0;
     }
 
-    bool CameraHook::IsThunkAddress(std::uintptr_t a_address) noexcept
-    {
-        for (std::size_t index = 0; index < kMaxHookedVtables; ++index) {
-            if (GetThunkAddress(index) == a_address) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     void CameraHook::HandleBoundaryFailure(std::string_view a_context) noexcept
     {
         try {
@@ -353,6 +332,17 @@ namespace ssc::runtime
         }
         if (auto* client = client_) {
             client->RequestReset();
+        }
+    }
+
+    void CameraHook::HandleUpdateFailure(std::string_view a_context) noexcept
+    {
+        try {
+            logger::critical("Unhandled exception at {} boundary; camera ownership will be released", a_context);
+        } catch (...) {
+        }
+        if (auto* client = client_) {
+            client->EmergencyReset();
         }
     }
 }
