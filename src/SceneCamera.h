@@ -3,6 +3,7 @@
 #include "runtime/ICameraControl.h"
 #include "runtime/IDebugVisualization.h"
 #include "runtime/IPresetProvider.h"
+#include "runtime/PresetPreviewService.h"
 #include "runtime/IRuntimeClient.h"
 #include "runtime/ISceneSource.h"
 #include "SceneSession.h"
@@ -19,6 +20,7 @@ namespace ssc
         void Configure(
             runtime::ISceneSource& a_sceneSource,
             runtime::IPresetProvider& a_presetProvider,
+            runtime::PresetPreviewService& a_previewService,
             runtime::ICameraControl& a_cameraControl,
             runtime::IDebugVisualization& a_debugVisualization) noexcept;
 
@@ -41,10 +43,23 @@ namespace ssc
             const runtime::SceneParticipantSnapshot& a_participants);
         void Restore(std::string_view a_reason);
         void ApplyRequestedReset();
+        [[nodiscard]] std::optional<runtime::CameraPreset> ResolvePreset(
+            const std::shared_ptr<const runtime::PresetPreviewRequest>& a_request) const;
+        [[nodiscard]] bool ApplyPreset(
+            const runtime::CameraPreset& a_preset,
+            bool a_liveEdit);
+        [[nodiscard]] bool ApplyRequestedPreset(
+            const std::shared_ptr<const runtime::PresetPreviewRequest>& a_request,
+            bool a_liveEdit);
+        void PublishPreviewFeedback(
+            bool a_applied,
+            std::string a_message,
+            std::optional<runtime::PresetOffset> a_offset = std::nullopt);
         void Clear() noexcept;
 
         runtime::ISceneSource* sceneSource_{ nullptr };
         runtime::IPresetProvider* presetProvider_{ nullptr };
+        runtime::PresetPreviewService* previewService_{ nullptr };
         runtime::ICameraControl* cameraControl_{ nullptr };
         runtime::IDebugVisualization* debugVisualization_{ nullptr };
         SceneSession session_;
@@ -56,6 +71,7 @@ namespace ssc
         std::atomic_bool cameraPoseActive_{ false };
         std::optional<core::SceneAnchor> anchor_;
         std::optional<runtime::CameraPose> cameraPose_;
+        std::shared_ptr<const runtime::PresetPreviewRequest> appliedPreviewRequest_;
         core::SceneAnchorCalculator anchorCalculator_;
         core::CameraPoseCalculator poseCalculator_;
     };

@@ -221,6 +221,16 @@ int main()
             "runtime rotation column 1 stores camera-up Y");
         passed &= CheckNear(runtimePose.rotation.entries[2][2], forwardYPose->basis.right.z,
             "runtime rotation column 2 stores camera-right Z");
+
+        const auto extracted = poseCalculator.ExtractOffset(
+            SceneAnchor{ { 10.0F, 20.0F, 30.0F }, { 0.0F, 1.0F, 0.0F } },
+            forwardYPose->position);
+        passed &= Check(extracted.has_value(), "world camera position converts back to an offset");
+        if (extracted) {
+            passed &= CheckNear(extracted->right, 5.0F, "inverse conversion restores right");
+            passed &= CheckNear(extracted->forward, -200.0F, "inverse conversion restores forward");
+            passed &= CheckNear(extracted->up, 60.0F, "inverse conversion restores up");
+        }
     }
 
     const auto forwardXPose = poseCalculator.Evaluate(
@@ -264,6 +274,9 @@ int main()
         SceneAnchor{ { 0.0F, 0.0F, 0.0F }, { 0.0F, 1.0F, 0.0F } },
         CameraOffset{ std::numeric_limits<float>::infinity(), -10.0F, 0.0F }),
         "non-finite camera offset is rejected");
+    passed &= Check(!poseCalculator.ExtractOffset(
+        SceneAnchor{ { 0.0F, 0.0F, 0.0F }, { 0.0F, 0.0F, 1.0F } },
+        Vec3{ 0.0F, -10.0F, 0.0F }), "degenerate anchor rejects inverse conversion");
 
     using ssc::runtime::PresetRepository;
     PresetRepository repository;
@@ -296,6 +309,69 @@ int main()
             "numeric preset offset is retained");
         passed &= Check((*validSnapshot)[1].id == "close", "second preset is retained");
     }
+
+    passed &= Check(repository.Create({
+        "wide",
+        { 25.0F, -350.0F, 100.0F },
+    }).succeeded, "create persists a new preset");
+    passed &= Check(repository.Snapshot()->size() == 3,
+        "create publishes all presets");
+    passed &= Check(!repository.Create({
+        "wide",
+        { 0.0F, -100.0F, 20.0F },
+    }).succeeded, "create rejects a duplicate id");
+    passed &= Check(!repository.Create({
+        "at-anchor",
+        {},
+    }).succeeded, "create rejects a camera at the anchor");
+    passed &= Check(!repository.Create({
+        "too-close-to-anchor",
+        { 1.0e-8F, 0.0F, 0.0F },
+    }).succeeded, "create rejects a camera too close to derive a view direction");
+
+    passed &= Check(repository.Update(
+        "default",
+        { 20.0F, -240.0F, 80.0F }).succeeded,
+        "update persists an existing preset");
+    passed &= CheckNear(repository.Snapshot()->front().offset.right, 20.0F,
+        "update publishes the changed offset");
+    passed &= Check(!repository.Update(
+        "missing",
+        { 0.0F, -100.0F, 10.0F }).succeeded,
+        "update rejects an unknown id");
+
+    passed &= Check(repository.Delete("close").succeeded,
+        "delete removes an existing preset");
+    passed &= Check(repository.Snapshot()->size() == 2,
+        "delete publishes the remaining presets");
+    passed &= Check(!repository.Delete("close").succeeded,
+        "delete rejects an unknown id");
+
+    PresetRepository persistedReader;
+    const auto persistedLoad = persistedReader.LoadFromFile(validPath);
+    passed &= Check(persistedLoad.succeeded && persistedLoad.presetCount == 2,
+        "CRUD result can be loaded from disk");
+    if (persistedReader.Snapshot()->size() == 2) {
+        passed &= Check((*persistedReader.Snapshot())[0].id == "default",
+            "update retains preset order");
+        passed &= CheckNear((*persistedReader.Snapshot())[0].offset.right, 20.0F,
+            "updated offset survives reload");
+        passed &= Check((*persistedReader.Snapshot())[1].id == "wide",
+            "created preset survives reload");
+    }
+    const auto reloadResult = repository.Reload();
+    passed &= Check(reloadResult.succeeded && reloadResult.presetCount == 2,
+        "repository reloads its storage path");
+
+    passed &= Check(WriteText(validPath, R"json({ "schemaVersion": 1, "presets": [)json"),
+        "broken reload fixture can be written");
+    const auto brokenReload = repository.Reload();
+    passed &= Check(!brokenReload.succeeded,
+        "repository rejects a broken external reload");
+    passed &= Check(repository.Snapshot()->size() == 2,
+        "failed reload retains the last valid snapshot");
+    passed &= Check((*repository.Snapshot())[0].id == "default",
+        "failed reload retains the last valid preset values");
     RemoveFile(validPath);
 
     const auto missingPath = NextTemporaryPath();
@@ -303,7 +379,7 @@ int main()
     passed &= Check(!missingLoad.succeeded, "missing preset file is rejected");
     passed &= Check(repository.Snapshot()->empty(), "failed load publishes an empty snapshot");
 
-    const std::array<std::pair<std::string_view, std::string_view>, 8> invalidDocuments{{
+    const std::array<std::pair<std::string_view, std::string_view>, 9> invalidDocuments{{
         { "broken JSON", R"json({ "schemaVersion": 1, "presets": [)json" },
         { "unknown schema version", R"json({ "schemaVersion": 2, "presets": [] })json" },
         { "missing required field", R"json({ "schemaVersion": 1, "presets": [
@@ -321,6 +397,9 @@ int main()
         ] })json" },
         { "empty id", R"json({ "schemaVersion": 1, "presets": [
             { "id": "", "offset": { "right": 0, "forward": -10, "up": 0 } }
+        ] })json" },
+        { "camera at anchor", R"json({ "schemaVersion": 1, "presets": [
+            { "id": "x", "offset": { "right": 0, "forward": 0, "up": 0 } }
         ] })json" },
         { "non-array presets", R"json({ "schemaVersion": 1, "presets": {} })json" },
     }};

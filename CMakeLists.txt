@@ -52,6 +52,8 @@ set(SSC_SOURCES
     src/runtime/CameraPoseAdapter.h
     src/runtime/PresetRepository.cpp
     src/runtime/PresetRepository.h
+    src/runtime/PresetPreviewService.cpp
+    src/runtime/PresetPreviewService.h
     src/runtime/ICameraControl.h
     src/runtime/IDebugVisualization.h
     src/runtime/IPresetProvider.h
@@ -69,6 +71,8 @@ set(SSC_SOURCES
     src/runtime/SmoothCamCameraControl.h
     src/runtime/WorldDebugVisualization.cpp
     src/runtime/WorldDebugVisualization.h
+    src/ui/PresetEditorMenu.cpp
+    src/ui/PresetEditorMenu.h
     src/main.cpp
     src/pch.h
 )
@@ -86,6 +90,12 @@ target_include_directories(
     PRIVATE
         src
         external/smoothcam/SmoothCam/include
+)
+
+target_include_directories(
+    SexlabSceneCamera
+    SYSTEM PRIVATE
+        external/skse-menu-framework
 )
 
 target_link_libraries(

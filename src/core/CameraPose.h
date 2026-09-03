@@ -19,5 +19,8 @@ namespace ssc::core
         [[nodiscard]] std::optional<CameraPose> Evaluate(
             const SceneAnchor& a_anchor,
             const CameraOffset& a_offset) const noexcept;
+        [[nodiscard]] std::optional<CameraOffset> ExtractOffset(
+            const SceneAnchor& a_anchor,
+            const Vec3& a_cameraPosition) const noexcept;
     };
 }

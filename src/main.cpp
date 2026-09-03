@@ -1,6 +1,7 @@
 #include "SceneCamera.h"
 #include "runtime/CameraHook.h"
 #include "runtime/PresetRepository.h"
+#include "runtime/PresetPreviewService.h"
 #include "runtime/PluginRuntime.h"
 #include "runtime/SexLabPSceneSource.h"
 #include "runtime/SmoothCamCameraControl.h"
@@ -41,6 +42,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
         sceneCamera->Configure(
             *ssc::runtime::SexLabPSceneSource::GetSingleton(),
             *ssc::runtime::PresetRepository::GetSingleton(),
+            *ssc::runtime::PresetPreviewService::GetSingleton(),
             *ssc::runtime::SmoothCamCameraControl::GetSingleton(),
             *ssc::runtime::WorldDebugVisualization::GetSingleton());
         ssc::runtime::CameraHook::Configure(

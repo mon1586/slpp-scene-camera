@@ -4,6 +4,7 @@
 #include "runtime/PresetRepository.h"
 #include "runtime/SexLabPSceneSource.h"
 #include "runtime/SmoothCamCameraControl.h"
+#include "ui/PresetEditorMenu.h"
 
 namespace ssc::runtime
 {
@@ -26,7 +27,7 @@ namespace ssc::runtime
         spdlog::set_default_logger(std::move(log));
         spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] %v");
         spdlog::set_level(spdlog::level::info);
-        spdlog::flush_on(spdlog::level::warn);
+        spdlog::flush_on(spdlog::level::info);
     }
 
     bool PluginRuntime::RegisterLifecycle(IRuntimeClient& a_client)
@@ -60,6 +61,7 @@ namespace ssc::runtime
             case SKSE::MessagingInterface::kPostLoad:
                 static_cast<void>(
                     SmoothCamCameraControl::GetSingleton()->RegisterAPIListener(messaging));
+                static_cast<void>(ssc::ui::PresetEditorMenu::Register());
                 break;
             case SKSE::MessagingInterface::kPostPostLoad:
                 static_cast<void>(

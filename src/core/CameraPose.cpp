@@ -144,4 +144,40 @@ namespace ssc::core
 
         return CameraPose{ cameraPosition, basis };
     }
+
+    std::optional<CameraOffset> CameraPoseCalculator::ExtractOffset(
+        const SceneAnchor& a_anchor,
+        const Vec3& a_cameraPosition) const noexcept
+    {
+        if (!IsFinite(a_anchor.position) || !IsFinite(a_anchor.forward) ||
+            !IsFinite(a_cameraPosition)) {
+            return std::nullopt;
+        }
+
+        const auto anchorForward = Normalize({
+            static_cast<double>(a_anchor.forward.x),
+            static_cast<double>(a_anchor.forward.y),
+            0.0,
+        });
+        if (!anchorForward) {
+            return std::nullopt;
+        }
+
+        constexpr Vec3d worldUp{ 0.0, 0.0, 1.0 };
+        const auto anchorRight = Cross(*anchorForward, worldUp);
+        const Vec3d difference{
+            static_cast<double>(a_cameraPosition.x) - a_anchor.position.x,
+            static_cast<double>(a_cameraPosition.y) - a_anchor.position.y,
+            static_cast<double>(a_cameraPosition.z) - a_anchor.position.z,
+        };
+        const auto right = ToFiniteFloat(
+            difference.x * anchorRight.x + difference.y * anchorRight.y);
+        const auto forward = ToFiniteFloat(
+            difference.x * anchorForward->x + difference.y * anchorForward->y);
+        const auto up = ToFiniteFloat(difference.z);
+        if (!right || !forward || !up) {
+            return std::nullopt;
+        }
+        return CameraOffset{ *right, *forward, *up };
+    }
 }
