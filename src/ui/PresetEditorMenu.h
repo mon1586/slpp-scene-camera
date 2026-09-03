@@ -6,5 +6,6 @@ namespace ssc::ui
     {
     public:
         [[nodiscard]] static bool Register();
+        static void CloseForLifecycle() noexcept;
     };
 }

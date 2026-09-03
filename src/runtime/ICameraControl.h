@@ -28,6 +28,7 @@ namespace ssc::runtime
         virtual ~ICameraControl() = default;
 
         [[nodiscard]] virtual bool CanAcquire() const noexcept = 0;
+        [[nodiscard]] virtual std::string_view UnavailableReason() const noexcept = 0;
         [[nodiscard]] virtual bool Acquire() = 0;
         [[nodiscard]] virtual bool StillOwnsCamera() const noexcept = 0;
         [[nodiscard]] virtual bool OwnsCamera() const noexcept = 0;

@@ -6,17 +6,29 @@
 
 namespace ssc::runtime
 {
-    struct PresetOffset
+    struct PresetFramingOffset
     {
         float right{ 0.0F };
-        float forward{ 0.0F };
         float up{ 0.0F };
+    };
+
+    struct PresetOrbit
+    {
+        float yawDegrees{ 0.0F };
+        float pitchDegrees{ 0.0F };
+        float distance{ 0.0F };
+    };
+
+    struct PresetTransform
+    {
+        PresetFramingOffset framingOffset;
+        PresetOrbit orbit;
     };
 
     struct CameraPreset
     {
         std::string id;
-        PresetOffset offset;
+        PresetTransform transform;
     };
 
     using CameraPresetSnapshot = std::vector<CameraPreset>;

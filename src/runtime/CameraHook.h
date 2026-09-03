@@ -59,5 +59,6 @@ namespace ssc::runtime
         static inline IRuntimeClient* client_{ nullptr };
         static inline ISceneSource* sceneSource_{ nullptr };
         static inline thread_local std::size_t thunkDepth_{ 0 };
+        static inline thread_local bool updateThunkActive_{ false };
     };
 }

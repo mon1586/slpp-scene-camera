@@ -2,6 +2,7 @@
 #include "core/CameraPose.h"
 #include "core/SceneAnchor.h"
 #include "runtime/CameraPoseAdapter.h"
+#include "runtime/PresetPreviewService.h"
 #include "runtime/PresetRepository.h"
 
 #include <array>
@@ -110,6 +111,37 @@ int main()
     passed &= Check(!session.Matches(first), "clear removes the old scene key");
     passed &= Check(session.Prepare(second), "a new scene can prepare after clear");
 
+    auto* previewService = ssc::runtime::PresetPreviewService::GetSingleton();
+    previewService->EndPreviewSession();
+    passed &= Check(!previewService->PreviewSessionActive(),
+        "preset preview session begins inactive");
+    previewService->BeginPreviewSession();
+    passed &= Check(previewService->PreviewSessionActive(),
+        "preset preview session can be opened independently of a scene");
+    const ssc::runtime::PresetTransform previewTransform{
+        { 10.0F, 20.0F }, { 30.0F, 5.0F, 200.0F }
+    };
+    const auto previewRevision = previewService->SetPreview(previewTransform);
+    const auto previewRequest = previewService->Request();
+    passed &= Check(previewRequest && previewRequest->revision == previewRevision &&
+        previewRequest->transform.has_value(),
+        "preset preview request carries only transform values and a revision");
+    previewService->PublishFeedback({
+        true, true, true, previewRevision, previewTransform, "Preview active" });
+    const auto previewFeedback = previewService->Feedback();
+    passed &= Check(previewFeedback && previewFeedback->sceneActive &&
+        previewFeedback->previewApplied && previewFeedback->previewPossible &&
+        previewFeedback->appliedRevision == previewRevision,
+        "preset preview feedback acknowledges the applied revision");
+    previewService->ClearPreview();
+    const auto clearRequest = previewService->Request();
+    passed &= Check(clearRequest && clearRequest->revision > previewRevision &&
+        !clearRequest->transform.has_value(),
+        "clearing preview publishes a newer request without scene data");
+    previewService->EndPreviewSession();
+    passed &= Check(!previewService->PreviewSessionActive(),
+        "preset preview session can be closed");
+
     using ssc::core::SceneAnchorCalculator;
     using ssc::core::Vec3;
     SceneAnchorCalculator anchorCalculator;
@@ -168,37 +200,37 @@ int main()
         passed &= Check(std::isfinite(extremeAnchor->position.x), "extreme anchor position remains finite");
     }
 
-    using ssc::core::CameraOffset;
     using ssc::core::CameraPoseCalculator;
+    using ssc::core::CameraRig;
     using ssc::core::SceneAnchor;
     CameraPoseCalculator poseCalculator;
 
     const auto forwardYPose = poseCalculator.Evaluate(
         SceneAnchor{ { 10.0F, 20.0F, 30.0F }, { 0.0F, 1.0F, 0.0F } },
-        CameraOffset{ 5.0F, -200.0F, 60.0F });
+        CameraRig{ { 5.0F, 20.0F }, { 0.0F, 0.0F, 200.0F } });
     passed &= Check(forwardYPose.has_value(), "+Y anchor produces a camera pose");
     if (forwardYPose) {
-        passed &= CheckNear(forwardYPose->position.x, 15.0F, "right offset follows F cross U");
-        passed &= CheckNear(forwardYPose->position.y, -180.0F, "forward offset follows anchor forward");
-        passed &= CheckNear(forwardYPose->position.z, 90.0F, "up offset follows world up");
+        passed &= CheckNear(forwardYPose->position.x, 15.0F, "pivot right follows F cross U");
+        passed &= CheckNear(forwardYPose->position.y, -180.0F, "zero yaw places camera behind framing center");
+        passed &= CheckNear(forwardYPose->position.z, 50.0F, "pan up follows camera up");
 
-        const auto toAnchorX = 10.0F - forwardYPose->position.x;
-        const auto toAnchorY = 20.0F - forwardYPose->position.y;
-        const auto toAnchorZ = 30.0F - forwardYPose->position.z;
-        const auto toAnchorLength = std::sqrt(
-            toAnchorX * toAnchorX + toAnchorY * toAnchorY + toAnchorZ * toAnchorZ);
+        const auto toPivotX = 15.0F - forwardYPose->position.x;
+        const auto toPivotY = 20.0F - forwardYPose->position.y;
+        const auto toPivotZ = 50.0F - forwardYPose->position.z;
+        const auto toPivotLength = std::sqrt(
+            toPivotX * toPivotX + toPivotY * toPivotY + toPivotZ * toPivotZ);
         passed &= CheckNear(
             forwardYPose->basis.viewForward.x,
-            toAnchorX / toAnchorLength,
-            "rotation view column points toward anchor X");
+            toPivotX / toPivotLength,
+            "rotation view column points toward pivot X");
         passed &= CheckNear(
             forwardYPose->basis.viewForward.y,
-            toAnchorY / toAnchorLength,
-            "rotation view column points toward anchor Y");
+            toPivotY / toPivotLength,
+            "rotation view column points toward pivot Y");
         passed &= CheckNear(
             forwardYPose->basis.viewForward.z,
-            toAnchorZ / toAnchorLength,
-            "rotation view column points toward anchor Z");
+            toPivotZ / toPivotLength,
+            "rotation view column points toward pivot Z");
         passed &= CheckNear(Length(forwardYPose->basis.viewForward), 1.0F,
             "camera view direction is unit length");
         passed &= CheckNear(Length(forwardYPose->basis.up), 1.0F,
@@ -222,33 +254,63 @@ int main()
         passed &= CheckNear(runtimePose.rotation.entries[2][2], forwardYPose->basis.right.z,
             "runtime rotation column 2 stores camera-right Z");
 
-        const auto extracted = poseCalculator.ExtractOffset(
+    }
+
+    const CameraRig orbitRig{ {}, { 35.0F, 20.0F, 250.0F } };
+    const auto orbitPose = poseCalculator.Evaluate(
+        SceneAnchor{ { 10.0F, 20.0F, 30.0F }, { 0.0F, 1.0F, 0.0F } },
+        orbitRig);
+    passed &= Check(orbitPose.has_value(), "yaw and pitch produce an orbit pose");
+    if (orbitPose) {
+        const auto extracted = poseCalculator.ExtractRig(
             SceneAnchor{ { 10.0F, 20.0F, 30.0F }, { 0.0F, 1.0F, 0.0F } },
-            forwardYPose->position);
-        passed &= Check(extracted.has_value(), "world camera position converts back to an offset");
+            orbitPose->position);
+        passed &= Check(extracted.has_value(), "world camera position converts back to an orbit");
         if (extracted) {
-            passed &= CheckNear(extracted->right, 5.0F, "inverse conversion restores right");
-            passed &= CheckNear(extracted->forward, -200.0F, "inverse conversion restores forward");
-            passed &= CheckNear(extracted->up, 60.0F, "inverse conversion restores up");
+            passed &= CheckNear(extracted->orbit.yawDegrees, 35.0F,
+                "inverse conversion restores yaw");
+            passed &= CheckNear(extracted->orbit.pitchDegrees, 20.0F,
+                "inverse conversion restores pitch");
+            passed &= CheckNear(extracted->orbit.distance, 250.0F,
+                "inverse conversion restores distance");
         }
+    }
+
+    const CameraRig framedOrbitRig{ { 25.0F, 40.0F }, { 35.0F, 20.0F, 250.0F } };
+    const auto framedOrbitPose = poseCalculator.Evaluate(
+        SceneAnchor{ { 10.0F, 20.0F, 30.0F }, { 0.0F, 1.0F, 0.0F } },
+        framedOrbitRig);
+    passed &= Check(framedOrbitPose.has_value(), "screen-relative framing produces an orbit pose");
+    if (framedOrbitPose) {
+        const Vec3 cameraToAnchor{
+            10.0F - framedOrbitPose->position.x,
+            20.0F - framedOrbitPose->position.y,
+            30.0F - framedOrbitPose->position.z,
+        };
+        passed &= CheckNear(Dot(cameraToAnchor, framedOrbitPose->basis.right), -25.0F,
+            "pan right remains the anchor's screen-horizontal offset after yaw");
+        passed &= CheckNear(Dot(cameraToAnchor, framedOrbitPose->basis.up), -40.0F,
+            "pan up remains the anchor's screen-vertical offset after pitch");
+        passed &= CheckNear(Dot(cameraToAnchor, framedOrbitPose->basis.viewForward), 250.0F,
+            "framing offsets do not alter orbit distance along the view axis");
     }
 
     const auto forwardXPose = poseCalculator.Evaluate(
         SceneAnchor{ { 0.0F, 0.0F, 0.0F }, { 1.0F, 0.0F, 0.0F } },
-        CameraOffset{ 5.0F, -200.0F, 60.0F });
+        CameraRig{ { 5.0F, 20.0F }, { 0.0F, 0.0F, 200.0F } });
     passed &= Check(forwardXPose.has_value(), "rotated anchor produces a camera pose");
     if (forwardXPose) {
         passed &= CheckNear(forwardXPose->position.x, -200.0F,
-            "rotated anchor preserves local forward composition");
+            "rotated anchor preserves orbit distance");
         passed &= CheckNear(forwardXPose->position.y, -5.0F,
-            "rotated anchor preserves local right composition");
-        passed &= CheckNear(forwardXPose->position.z, 60.0F,
-            "rotated anchor preserves local up composition");
+            "rotated anchor preserves pivot right composition");
+        passed &= CheckNear(forwardXPose->position.z, 20.0F,
+            "rotated anchor preserves pivot up composition");
     }
 
     const auto directlyAbove = poseCalculator.Evaluate(
         SceneAnchor{ { 0.0F, 0.0F, 0.0F }, { 0.0F, 1.0F, 0.0F } },
-        CameraOffset{ 0.0F, 0.0F, 50.0F });
+        CameraRig{ {}, { 0.0F, 90.0F, 50.0F } });
     passed &= Check(directlyAbove.has_value(), "camera directly above anchor uses fallback axis");
     if (directlyAbove) {
         passed &= CheckNear(directlyAbove->basis.viewForward.z, -1.0F,
@@ -257,7 +319,7 @@ int main()
 
     const auto directlyBelow = poseCalculator.Evaluate(
         SceneAnchor{ { 0.0F, 0.0F, 0.0F }, { 0.0F, 1.0F, 0.0F } },
-        CameraOffset{ 0.0F, 0.0F, -50.0F });
+        CameraRig{ {}, { 0.0F, -90.0F, 50.0F } });
     passed &= Check(directlyBelow.has_value(), "camera directly below anchor uses fallback axis");
     if (directlyBelow) {
         passed &= CheckNear(directlyBelow->basis.viewForward.z, 1.0F,
@@ -266,17 +328,19 @@ int main()
 
     passed &= Check(!poseCalculator.Evaluate(
         SceneAnchor{ { 0.0F, 0.0F, 0.0F }, { 0.0F, 1.0F, 0.0F } },
-        CameraOffset{}), "camera and anchor at the same point are rejected");
+        CameraRig{}), "zero orbit distance is rejected");
     passed &= Check(!poseCalculator.Evaluate(
         SceneAnchor{ { 0.0F, 0.0F, 0.0F }, { 0.0F, 0.0F, 1.0F } },
-        CameraOffset{ 0.0F, -10.0F, 0.0F }), "degenerate anchor forward is rejected");
+        CameraRig{ {}, { 0.0F, 0.0F, 10.0F } }), "degenerate anchor forward is rejected");
     passed &= Check(!poseCalculator.Evaluate(
         SceneAnchor{ { 0.0F, 0.0F, 0.0F }, { 0.0F, 1.0F, 0.0F } },
-        CameraOffset{ std::numeric_limits<float>::infinity(), -10.0F, 0.0F }),
-        "non-finite camera offset is rejected");
-    passed &= Check(!poseCalculator.ExtractOffset(
+        CameraRig{
+            { std::numeric_limits<float>::infinity(), 0.0F },
+            { 0.0F, 0.0F, 10.0F } }),
+        "non-finite framing offset is rejected");
+    passed &= Check(!poseCalculator.ExtractRig(
         SceneAnchor{ { 0.0F, 0.0F, 0.0F }, { 0.0F, 0.0F, 1.0F } },
-        Vec3{ 0.0F, -10.0F, 0.0F }), "degenerate anchor rejects inverse conversion");
+        Vec3{ 0.0F, -10.0F, 0.0F }), "degenerate anchor rejects orbit extraction");
 
     using ssc::runtime::PresetRepository;
     PresetRepository repository;
@@ -305,39 +369,114 @@ int main()
         "valid immutable snapshot exposes every preset");
     if (validSnapshot && validSnapshot->size() == 2) {
         passed &= Check((*validSnapshot)[0].id == "default", "preset order is retained");
-        passed &= CheckNear((*validSnapshot)[0].offset.forward, -200.5F,
-            "numeric preset offset is retained");
+        const auto expectedDistance = static_cast<float>(std::hypot(1.0, 200.5, 60.0));
+        passed &= CheckNear((*validSnapshot)[0].transform.framingOffset.right, 0.0F,
+            "legacy offset migration keeps horizontal framing centered");
+        passed &= CheckNear((*validSnapshot)[0].transform.framingOffset.up, 0.0F,
+            "legacy offset migration keeps vertical framing centered");
+        passed &= CheckNear((*validSnapshot)[0].transform.orbit.distance, expectedDistance,
+            "legacy offset migration retains camera distance");
+        const auto migratedPose = poseCalculator.Evaluate(
+            SceneAnchor{ { 0.0F, 0.0F, 0.0F }, { 0.0F, 1.0F, 0.0F } },
+            CameraRig{
+                {
+                    (*validSnapshot)[0].transform.framingOffset.right,
+                    (*validSnapshot)[0].transform.framingOffset.up,
+                },
+                {
+                    (*validSnapshot)[0].transform.orbit.yawDegrees,
+                    (*validSnapshot)[0].transform.orbit.pitchDegrees,
+                    (*validSnapshot)[0].transform.orbit.distance,
+                },
+            });
+        passed &= Check(migratedPose.has_value(), "migrated legacy preset evaluates");
+        if (migratedPose) {
+            passed &= CheckNear(migratedPose->position.x, 1.0F,
+                "legacy migration retains right position");
+            passed &= CheckNear(migratedPose->position.y, -200.5F,
+                "legacy migration retains forward position");
+            passed &= CheckNear(migratedPose->position.z, 60.0F,
+                "legacy migration retains up position");
+        }
         passed &= Check((*validSnapshot)[1].id == "close", "second preset is retained");
     }
 
+    const auto version2Path = NextTemporaryPath();
+    passed &= Check(WriteText(version2Path, R"json({
+        "schemaVersion": 2,
+        "presets": [
+            {
+                "id": "version-2",
+                "pivotOffset": { "right": 10, "forward": 20, "up": 30 },
+                "orbit": { "yawDegrees": 90, "pitchDegrees": 0, "distance": 100 }
+            }
+        ]
+    })json"), "version 2 migration fixture can be written");
+    PresetRepository version2Repository;
+    const auto version2Load = version2Repository.LoadFromFile(version2Path);
+    passed &= Check(version2Load.succeeded && version2Load.presetCount == 1,
+        "version 2 schema migrates successfully");
+    if (version2Load.succeeded) {
+        const auto& migrated = version2Repository.Snapshot()->front().transform;
+        passed &= CheckNear(migrated.framingOffset.right, 20.0F,
+            "version 2 pivot offset migrates along rotated screen right");
+        passed &= CheckNear(migrated.framingOffset.up, 30.0F,
+            "version 2 pivot up migrates to screen up");
+        passed &= CheckNear(migrated.orbit.distance, 110.0F,
+            "version 2 view-axis pivot component folds into orbit distance");
+        const auto migratedVersion2Pose = poseCalculator.Evaluate(
+            SceneAnchor{ { 0.0F, 0.0F, 0.0F }, { 0.0F, 1.0F, 0.0F } },
+            CameraRig{
+                { migrated.framingOffset.right, migrated.framingOffset.up },
+                {
+                    migrated.orbit.yawDegrees,
+                    migrated.orbit.pitchDegrees,
+                    migrated.orbit.distance,
+                },
+            });
+        passed &= Check(migratedVersion2Pose.has_value(),
+            "migrated version 2 preset evaluates");
+        if (migratedVersion2Pose) {
+            passed &= CheckNear(migratedVersion2Pose->position.x, 110.0F,
+                "version 2 migration retains camera X");
+            passed &= CheckNear(migratedVersion2Pose->position.y, 20.0F,
+                "version 2 migration retains camera Y");
+            passed &= CheckNear(migratedVersion2Pose->position.z, 30.0F,
+                "version 2 migration retains camera Z");
+        }
+    }
+    RemoveFile(version2Path);
+
     passed &= Check(repository.Create({
         "wide",
-        { 25.0F, -350.0F, 100.0F },
+        { { 25.0F, 100.0F }, { 30.0F, 10.0F, 350.0F } },
     }).succeeded, "create persists a new preset");
     passed &= Check(repository.Snapshot()->size() == 3,
         "create publishes all presets");
     passed &= Check(!repository.Create({
         "wide",
-        { 0.0F, -100.0F, 20.0F },
+        { {}, { 0.0F, 0.0F, 100.0F } },
     }).succeeded, "create rejects a duplicate id");
     passed &= Check(!repository.Create({
-        "at-anchor",
-        {},
-    }).succeeded, "create rejects a camera at the anchor");
+        "zero-distance",
+        { {}, { 0.0F, 0.0F, 0.0F } },
+    }).succeeded, "create rejects zero orbit distance");
     passed &= Check(!repository.Create({
-        "too-close-to-anchor",
-        { 1.0e-8F, 0.0F, 0.0F },
-    }).succeeded, "create rejects a camera too close to derive a view direction");
+        "too-close",
+        { {}, { 0.0F, 0.0F, 1.0e-8F } },
+    }).succeeded, "create rejects an orbit distance too close to derive a view direction");
 
     passed &= Check(repository.Update(
         "default",
-        { 20.0F, -240.0F, 80.0F }).succeeded,
+        { { 20.0F, 80.0F }, { 45.0F, -15.0F, 240.0F } }).succeeded,
         "update persists an existing preset");
-    passed &= CheckNear(repository.Snapshot()->front().offset.right, 20.0F,
-        "update publishes the changed offset");
+    passed &= CheckNear(repository.Snapshot()->front().transform.framingOffset.right, 20.0F,
+        "update publishes the changed framing offset");
+    passed &= CheckNear(repository.Snapshot()->front().transform.orbit.yawDegrees, 45.0F,
+        "update publishes the changed orbit");
     passed &= Check(!repository.Update(
         "missing",
-        { 0.0F, -100.0F, 10.0F }).succeeded,
+        { {}, { 0.0F, 0.0F, 100.0F } }).succeeded,
         "update rejects an unknown id");
 
     passed &= Check(repository.Delete("close").succeeded,
@@ -354,8 +493,14 @@ int main()
     if (persistedReader.Snapshot()->size() == 2) {
         passed &= Check((*persistedReader.Snapshot())[0].id == "default",
             "update retains preset order");
-        passed &= CheckNear((*persistedReader.Snapshot())[0].offset.right, 20.0F,
-            "updated offset survives reload");
+        passed &= CheckNear(
+            (*persistedReader.Snapshot())[0].transform.framingOffset.right,
+            20.0F,
+            "updated framing offset survives reload");
+        passed &= CheckNear(
+            (*persistedReader.Snapshot())[0].transform.orbit.yawDegrees,
+            45.0F,
+            "updated orbit survives reload");
         passed &= Check((*persistedReader.Snapshot())[1].id == "wide",
             "created preset survives reload");
     }
@@ -376,12 +521,42 @@ int main()
 
     const auto missingPath = NextTemporaryPath();
     const auto missingLoad = repository.LoadFromFile(missingPath);
-    passed &= Check(!missingLoad.succeeded, "missing preset file is rejected");
-    passed &= Check(repository.Snapshot()->empty(), "failed load publishes an empty snapshot");
+    passed &= Check(missingLoad.succeeded && missingLoad.presetCount == 0,
+        "missing preset file initializes a valid empty repository");
+    passed &= Check(repository.Snapshot()->empty(),
+        "missing preset file publishes an empty snapshot");
+    passed &= Check(repository.Create({
+        "recovered-missing",
+        { {}, { 0.0F, 0.0F, 200.0F } },
+    }).succeeded, "missing preset file can be recovered by creating a preset");
+    RemoveFile(missingPath);
 
-    const std::array<std::pair<std::string_view, std::string_view>, 9> invalidDocuments{{
+    const auto corruptRecoveryPath = NextTemporaryPath();
+    passed &= Check(WriteText(
+        corruptRecoveryPath,
+        R"json({ "schemaVersion": 3, "presets": [)json"),
+        "corrupt recovery fixture can be written");
+    PresetRepository corruptRecoveryRepository;
+    passed &= Check(!corruptRecoveryRepository.LoadFromFile(corruptRecoveryPath).succeeded,
+        "corrupt initial preset file is reported");
+    passed &= Check(corruptRecoveryRepository.Create({
+        "recovered-corrupt",
+        { {}, { 0.0F, 0.0F, 200.0F } },
+    }).succeeded, "corrupt preset file can be recovered by creating a preset");
+    auto corruptBackupPath = corruptRecoveryPath;
+    corruptBackupPath += ".invalid.bak";
+    passed &= Check(std::filesystem::exists(corruptBackupPath),
+        "corrupt preset file is backed up before recovery save");
+    PresetRepository corruptRecoveryReader;
+    passed &= Check(corruptRecoveryReader.LoadFromFile(corruptRecoveryPath).succeeded &&
+        corruptRecoveryReader.Snapshot()->size() == 1,
+        "recovered corrupt preset file can be loaded");
+    RemoveFile(corruptRecoveryPath);
+    RemoveFile(corruptBackupPath);
+
+    const std::array<std::pair<std::string_view, std::string_view>, 13> invalidDocuments{{
         { "broken JSON", R"json({ "schemaVersion": 1, "presets": [)json" },
-        { "unknown schema version", R"json({ "schemaVersion": 2, "presets": [] })json" },
+        { "unknown schema version", R"json({ "schemaVersion": 4, "presets": [] })json" },
         { "missing required field", R"json({ "schemaVersion": 1, "presets": [
             { "id": "x", "offset": { "right": 0, "forward": -10 } }
         ] })json" },
@@ -402,6 +577,21 @@ int main()
             { "id": "x", "offset": { "right": 0, "forward": 0, "up": 0 } }
         ] })json" },
         { "non-array presets", R"json({ "schemaVersion": 1, "presets": {} })json" },
+        { "missing v2 orbit", R"json({ "schemaVersion": 2, "presets": [
+            { "id": "x", "pivotOffset": { "right": 0, "forward": 0, "up": 0 } }
+        ] })json" },
+        { "v2 yaw outside range", R"json({ "schemaVersion": 2, "presets": [
+            { "id": "x", "pivotOffset": { "right": 0, "forward": 0, "up": 0 },
+              "orbit": { "yawDegrees": 181, "pitchDegrees": 0, "distance": 100 } }
+        ] })json" },
+        { "v2 zero distance", R"json({ "schemaVersion": 2, "presets": [
+            { "id": "x", "pivotOffset": { "right": 0, "forward": 0, "up": 0 },
+              "orbit": { "yawDegrees": 0, "pitchDegrees": 0, "distance": 0 } }
+        ] })json" },
+        { "missing v3 framing member", R"json({ "schemaVersion": 3, "presets": [
+            { "id": "x", "framingOffset": { "right": 0 },
+              "orbit": { "yawDegrees": 0, "pitchDegrees": 0, "distance": 100 } }
+        ] })json" },
     }};
     for (const auto& [description, document] : invalidDocuments) {
         const auto path = NextTemporaryPath();

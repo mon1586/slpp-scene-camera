@@ -1,12 +1,16 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 3,
   "presets": [
     {
       "id": "default",
-      "offset": {
+      "framingOffset": {
         "right": 0.0,
-        "forward": -200.0,
-        "up": 60.0
+        "up": 0.0
+      },
+      "orbit": {
+        "yawDegrees": 0.0,
+        "pitchDegrees": 16.699244,
+        "distance": 208.80613
       }
     }
   ]

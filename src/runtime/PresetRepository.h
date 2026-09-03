@@ -22,6 +22,7 @@ namespace ssc::runtime
         std::string error;
     };
 
+    [[nodiscard]] std::string ValidatePresetTransform(const PresetTransform& a_transform);
     [[nodiscard]] std::string ValidateCameraPreset(const CameraPreset& a_preset);
 
     class PresetRepository final : public IPresetProvider
@@ -36,7 +37,7 @@ namespace ssc::runtime
         [[nodiscard]] PresetOperationResult Create(const CameraPreset& a_preset);
         [[nodiscard]] PresetOperationResult Update(
             std::string_view a_id,
-            const PresetOffset& a_offset);
+            const PresetTransform& a_transform);
         [[nodiscard]] PresetOperationResult Delete(std::string_view a_id);
         [[nodiscard]] std::shared_ptr<const CameraPresetSnapshot> Snapshot() const noexcept override;
 
@@ -48,6 +49,7 @@ namespace ssc::runtime
         std::filesystem::path storagePath_;
         CameraPresetSnapshot persistedSnapshot_;
         bool loaded_{ false };
+        bool backupBeforeNextWrite_{ false };
         std::atomic<std::shared_ptr<const CameraPresetSnapshot>> snapshot_{
             std::make_shared<const CameraPresetSnapshot>() };
     };

@@ -25,6 +25,7 @@ namespace ssc
             runtime::IDebugVisualization& a_debugVisualization) noexcept;
 
         [[nodiscard]] bool NeedsUpdate() const noexcept override;
+        [[nodiscard]] bool AllowsUpdateWhilePaused() const noexcept override;
         void HandleSceneEvent(const runtime::SceneEvent& a_event) override;
 
         void Update() override;
@@ -43,18 +44,21 @@ namespace ssc
             const runtime::SceneParticipantSnapshot& a_participants);
         void Restore(std::string_view a_reason);
         void ApplyRequestedReset();
-        [[nodiscard]] std::optional<runtime::CameraPreset> ResolvePreset(
+        [[nodiscard]] std::optional<runtime::PresetTransform> ResolveTransform(
             const std::shared_ptr<const runtime::PresetPreviewRequest>& a_request) const;
-        [[nodiscard]] bool ApplyPreset(
-            const runtime::CameraPreset& a_preset,
-            bool a_liveEdit);
-        [[nodiscard]] bool ApplyRequestedPreset(
+        [[nodiscard]] bool ApplyTransform(
+            const runtime::PresetTransform& a_transform,
+            bool a_liveEdit,
+            std::uint64_t a_revision);
+        [[nodiscard]] bool ApplyRequestedTransform(
             const std::shared_ptr<const runtime::PresetPreviewRequest>& a_request,
             bool a_liveEdit);
         void PublishPreviewFeedback(
             bool a_applied,
             std::string a_message,
-            std::optional<runtime::PresetOffset> a_offset = std::nullopt);
+            std::optional<runtime::PresetTransform> a_transform = std::nullopt,
+            bool a_previewPossible = false,
+            std::uint64_t a_appliedRevision = 0);
         void Clear() noexcept;
 
         runtime::ISceneSource* sceneSource_{ nullptr };

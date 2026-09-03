@@ -77,14 +77,14 @@ SexLab P+ のプレイヤー参加シーンで SmoothCam から独自カメラ�
 詳細設計は[`fixed-preset-camera-design.md`](fixed-preset-camera-design.md)に記載する。
 
 - 最小のschema versionを持つ保存形式を決め、同梱した固定プリセットをread-onlyで読み込む。
-- 初版のプリセットはIDとアンカー基準の相対位置だけを持ち、カメラは常にアンカー位置を見る。
-- アンカーのforward、right、upから相対位置をworld poseへ変換する。
+- プリセットはID、画面相対のframing right・up、yaw・pitch・distanceを持つ。
+- アンカーのforward、right、upからframing centerとorbitをworld poseへ変換する。
 - parserで数値の有限性、値域、必須項目、重複ID、未知version、壊れたファイルを検証する。
 - clearanceとLOSは判定せず、読み込みに成功したプリセットをすべてvalidとして扱う。
 - 先頭プリセットのpose確定後にSmoothCamのカメラ制御を取得し、固定poseを反映する。
 - アニメーション変更後は新しいアンカーから同じプリセットを再変換する。
 - 読み込み失敗または有効なプリセットが0件の場合はカメラ制御を取得しない。
-- シーン終了、reset、watchdog、所有権喪失時は既存の復帰・解放経路を使う。
+- シーン終了、reset、watchdog、所有権喪失時は既存の復帰・解放経路を使う。editor表示中はゲーム時間を停止し、通常のシーン終了自体を進行させない。
 
 完了条件:
 
@@ -101,21 +101,27 @@ SmoothCam V2 APIによる取得、pose反映、goal復帰、解放の主経路�
 
 詳細設計は[`preset-crud-design.md`](preset-crud-design.md)に記載する。
 
+SKSE Menuに表示するcamera設定と操作の仕様は[`preset-settings-spec.md`](preset-settings-spec.md)に記載する。
+
 - 安定したpreset IDで、一覧、選択、作成、更新、削除、再読込を行える。
 - 作成・更新時に必須項目、数値の有限性、値域を一貫して検証し、失敗理由をユーザーへ示す。
 - 保存失敗や書き込み中断があっても、最後に正常だった保存データを失わない。
 - 未保存の編集、取消、再読込、選択中プリセットの削除について、予測可能な状態遷移を持つ。
 - LOS・clearanceの結果に関係なく、プリセットを編集・保存できる。
 
-ゲーム内編集では、現在のカメラをアンカー相対poseへ逆変換して作成・更新する。数値編集中は保存操作を待たず、その場でカメラへ反映する。取消時は保存済みの構図へ戻し、確定時だけ永続化する。clearance表示と保存時警告は後段で追加する。
+ゲーム内編集では、画面相対のPan Right・Pan Upと、yaw・pitch・distanceを分けて扱う。view forward方向のoffsetはdistanceと重複するため持たない。数値編集中は保存操作を待たず、その場でカメラへ反映する。取消時は保存済みの構図へ戻し、確定時だけ永続化する。clearance表示と保存時警告は後段で追加する。
 
-UI frameworkにはSKSE Menu Framework 3.4以降を採用する。Mod Control Panelから専用editorを開き、ゲーム操作入力はeditorへ捕捉しながら時間停止だけを解除してcamera updateを継続する。framework未導入時はmenu登録だけを無効にして既存のプリセット読込とcamera機能を維持する。
+UI frameworkにはSKSE Menu Framework 3.4以降を採用する。Mod Control Panelからinput-blockingの専用editorを開き、ゲーム時間はframeworkに停止させたままcamera preview更新だけを継続する。framework未導入時はmenu登録だけを無効にして既存のプリセット読込とcamera機能を維持する。
+
+editorはcamera pose適用済みの場合だけ有効にする。editorはsceneやanchorを参照せず、編集中のtransformとrevisionだけをpreview channelへ送る。editor表示中はゲーム時間を停止し、preview用camera updateだけを継続する。所有権喪失、Apply失敗、ロード、new game、plugin resetでは確認を待たず復帰する。Improved Cameraは既知競合として非サポートとし、検出時はcameraを取得しない。
 
 完了条件:
 
 - ゲーム内でCRUDと再読込を完結できる。
-- `right`、`forward`、`up`の数値操作にカメラが目視で追従する。
-- 保存、取消、削除、scene終了、camera所有権喪失の後に編集中の構図が残留しない。
+- framingの`Pan Right`、`Pan Up`とorbitの`yaw`、`pitch`、`distance`の数値操作にカメラが目視で追従する。
+- editor表示中はscene進行を停止し、preview用camera updateだけが継続する。
+- editor外のscene終了では即時にcamera制御を返す。
+- camera所有権喪失などの安全境界ではpreview sessionにかかわらず編集中のcamera poseが残留しない。
 - 不正入力と保存失敗で既存の正常なプリセットを壊さない。
 - SKSE Menu Framework未導入時も、既存のプリセット読込とcamera機能が変わらない。
 

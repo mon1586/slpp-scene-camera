@@ -44,6 +44,7 @@ namespace ssc::runtime
 
     void PluginRuntime::QueueLifecycleReset(std::string_view a_reason)
     {
+        ssc::ui::PresetEditorMenu::CloseForLifecycle();
         CameraHook::InvalidatePendingEvents();
         CameraHook::QueueReset(a_reason);
         logger::info("Camera reset requested: {}", a_reason);

@@ -73,6 +73,7 @@ set(SSC_SOURCES
     src/runtime/WorldDebugVisualization.h
     src/ui/PresetEditorMenu.cpp
     src/ui/PresetEditorMenu.h
+    src/ui/PresetEditorPolicy.h
     src/main.cpp
     src/pch.h
 )
@@ -149,6 +150,8 @@ if(SSC_BUILD_TESTS)
         src/runtime/CameraPoseAdapter.h
         src/runtime/PresetRepository.cpp
         src/runtime/PresetRepository.h
+        src/runtime/PresetPreviewService.cpp
+        src/runtime/PresetPreviewService.h
         src/runtime/IPresetProvider.h
         src/SceneSession.h
     )
@@ -166,5 +169,38 @@ if(SSC_BUILD_TESTS)
     add_test(
         NAME SexlabSceneCamera.SceneSession
         COMMAND SexlabSceneCameraTests
+    )
+
+    add_executable(
+        SexlabSceneCameraPresetSettingsSpecTests
+        tests/PresetSettingsSpecTests.cpp
+        src/core/CameraPose.cpp
+        src/core/CameraPose.h
+        src/core/SceneAnchor.h
+        src/runtime/IPresetProvider.h
+        src/runtime/PresetPreviewService.cpp
+        src/runtime/PresetPreviewService.h
+        src/runtime/PresetRepository.cpp
+        src/runtime/PresetRepository.h
+        src/ui/PresetEditorPolicy.h
+    )
+    target_include_directories(SexlabSceneCameraPresetSettingsSpecTests PRIVATE src)
+    target_link_libraries(
+        SexlabSceneCameraPresetSettingsSpecTests
+        PRIVATE
+            nlohmann_json::nlohmann_json
+    )
+    if(MSVC)
+        target_compile_options(
+            SexlabSceneCameraPresetSettingsSpecTests
+            PRIVATE
+                /EHsc
+                /permissive-
+                /W4
+        )
+    endif()
+    add_test(
+        NAME SexlabSceneCamera.PresetSettingsSpec
+        COMMAND SexlabSceneCameraPresetSettingsSpecTests
     )
 endif()

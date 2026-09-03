@@ -44,6 +44,12 @@ namespace ssc::runtime
     bool SmoothCamCameraControl::RegisterAPIListener(
         const SKSE::MessagingInterface* a_messaging)
     {
+        const auto improvedCameraLoaded = IsImprovedCameraLoaded();
+        improvedCameraDetected_.store(improvedCameraLoaded, std::memory_order_release);
+        if (improvedCameraLoaded) {
+            logger::warn(
+                "Improved Camera detected; this configuration is unsupported and scene camera control is disabled");
+        }
         if (!a_messaging) {
             logger::error("Cannot register SmoothCam API listener: messaging interface is unavailable");
             return false;
@@ -94,13 +100,41 @@ namespace ssc::runtime
 
     bool SmoothCamCameraControl::CanAcquire() const noexcept
     {
+        if (improvedCameraDetected_.load(std::memory_order_acquire)) {
+            return false;
+        }
         const auto* api = api_.load(std::memory_order_acquire);
         return api && IsAPIThread(*api) && api->IsCameraEnabled() &&
                CameraHook::IsUpdateHookHealthy();
     }
 
+    std::string_view SmoothCamCameraControl::UnavailableReason() const noexcept
+    {
+        if (improvedCameraDetected_.load(std::memory_order_acquire)) {
+            return "Improved Camera is installed and unsupported"sv;
+        }
+        const auto* api = api_.load(std::memory_order_acquire);
+        if (!api) {
+            return "SmoothCam API is unavailable"sv;
+        }
+        if (!IsAPIThread(*api)) {
+            return "Wrong SmoothCam API thread"sv;
+        }
+        if (!api->IsCameraEnabled()) {
+            return "SmoothCam is disabled"sv;
+        }
+        if (!CameraHook::IsUpdateHookHealthy()) {
+            return "Camera update hook is unavailable"sv;
+        }
+        return "SmoothCam cannot currently yield camera control"sv;
+    }
+
     bool SmoothCamCameraControl::Acquire()
     {
+        if (improvedCameraDetected_.load(std::memory_order_acquire)) {
+            logger::warn("Cannot acquire camera: Improved Camera is installed and unsupported");
+            return false;
+        }
         auto* api = api_.load(std::memory_order_acquire);
         if (!api) {
             logger::error("Cannot acquire camera: SmoothCam API is unavailable");
@@ -239,5 +273,11 @@ namespace ssc::runtime
             return true;
         }
         return false;
+    }
+
+    bool SmoothCamCameraControl::IsImprovedCameraLoaded() noexcept
+    {
+        return REX::W32::GetModuleHandleW(L"ImprovedCameraSE.dll") != nullptr ||
+               REX::W32::GetModuleHandleW(L"ImprovedCameraSE-NG.dll") != nullptr;
     }
 }

@@ -25,8 +25,7 @@
 - LOSまたはclearanceによる妥当性判定
 - 有効プリセットの自動選択
 - プリセット間の補間
-- カメラの向きやFOVの編集。schema version 1ではカメラは常にアンカーを見る
-- schema version 2へのmigration
+- rollまたはFOVの編集
 
 ## ユーザー要件
 
@@ -48,7 +47,7 @@
 
 - 削除は対象を明示し、誤操作を防ぐ確認を伴う。
 - 選択中またはプレビュー中のプリセットを削除しても、削除済みの値をカメラが参照し続けない。
-- 削除後にプリセットが残る場合は次の選択対象を明確にし、0件になった場合は独自カメラを安全に終了してSmoothCamへ戻す。
+- 削除後にプリセットが残る場合は次の選択対象を明確にする。editor中に0件になった場合は最後のposeと所有権を維持して新規作成を可能にし、0件のままeditorを閉じた時点でSmoothCamへ戻す。
 - 再読込は外部で変更された保存ファイルを反映できる。未保存の編集がある場合は、破棄の確認なしに再読込しない。
 
 ### 保存と取消
@@ -60,27 +59,30 @@
 
 ## リアルタイム編集要件
 
-- `right`、`forward`、`up`の数値を動かすたび、保存操作なしでカメラ位置が変わる。
+- framingの`right`、`up`またはorbitの`yaw`、`pitch`、`distance`を動かすたび、保存操作なしでカメラ構図が変わる。
 - 反映は次の利用可能なcamera updateまでに行い、連続操作に目視で追従する。
 - 数値操作中は保存ファイルを書き換えない。画面上の編集中値と永続化済み値を区別する。
 - 不正な途中入力は保存もカメラ反映もせず、最後に有効だったプレビューを維持する。
-- active sceneと有効なアンカーがない場合、編集と保存済みデータの管理はできても、プレビューできない理由を表示する。
+- camera poseを適用できていない場合はeditorを無効にし、プレビューできない理由を表示する。プリセット0件かつactive sceneから新規previewを開始可能な場合だけ、復旧用の新規作成を許可する。
 - 編集中にアニメーションが変わってアンカーが更新された場合、同じ編集中値を新しいアンカーへ適用し直す。
 - camera所有権を失った場合は他Modと競合して再取得を繰り返さず、プレビューを中止して状態を通知する。
 - この段階では補間を加えず、入力値に対する直接的な構図確認を優先する。
 
 ## プリセットの意味
 
-保存形式は[`fixed-preset-camera-design.md`](fixed-preset-camera-design.md)のschema version 1を継続する。
+SKSE Menuに表示する設定項目とユーザー操作の契約は[`preset-settings-spec.md`](preset-settings-spec.md)に分離する。保存形式は[`fixed-preset-camera-design.md`](fixed-preset-camera-design.md)のschema version 3を使用する。
 
 - `id`はプリセットを識別する安定キーであり、保存データ内で一意とする。
-- version 1には表示名を別フィールドとして追加しない。初版UIではIDを表示名として使う。
-- `offset.right`、`offset.forward`、`offset.up`はアンカー座標系の位置を表す。
-- 3値は有限で、camera poseを安全に生成できる範囲に制限する。具体的な上下限とUIのstepはゲーム内で扱いやすい値を確認して確定する。
-- cameraがアンカーと同一点になる構図は、見る方向を決められないため保存できない。
-- version 1では回転を保存せず、プレビュー時も保存後の利用時もカメラはアンカーを見る。
+- 表示名を別フィールドとして追加せず、UIではIDを表示名として使う。
+- `framingOffset.right`と`framingOffset.up`はcamera right/upで作る画面平面におけるframing centerの移動量を表す。
+- `orbit.yawDegrees`と`orbit.pitchDegrees`はアンカー周囲の視線方向、`orbit.distance`はframing centerとの距離を表す。
+- framing offsetを固定したままorbitを変えても、アンカーの画面内Right/Up成分は変化しない。
+- view forward方向のoffsetはdistanceと同じcamera poseになるため、独立した値として持たない。
+- framing offsetとorbitは有限値とする。yawは`-180..180`度、pitchは`-90..90`度、distanceは0より大きい値に制限する。
+- rollとFOVは保存しない。プレビュー時も保存後の利用時もカメラはframing centerを見る。
+- schema version 1と2は読み込み時にversion 3へ移行し、次のCRUD操作でversion 3として保存する。
 
-現在のcamera位置`C`からプリセットを作る場合は、anchor位置`A`との差`D = C - A`をanchorのright、forward、world upへ射影し、3つのoffsetを得る。現在のcameraがアンカー以外を向いていても、version 1へ保存されるのは位置だけであり、プレビュー時の向きはアンカーへ揃う。
+現在のcamera位置`C`からプリセットを作る場合は、framing offsetを0に置き、`C - anchor`からyaw、pitch、distanceを得る。現在のcameraがアンカー以外を向いていても、取り込み後の向きはアンカーへ揃う。編集中のプリセットから複製する場合はframing offsetを含む全値をそのまま引き継ぐ。
 
 ## 設計上の責務分離
 
@@ -89,7 +91,7 @@
 | UI | 操作の受付、編集中値とエラーの表示、確認 | JSON入出力、cameraの直接操作 |
 | 編集セッション | 選択ID、保存済み値、編集中値、dirty状態、保存・取消判断 | game型、ファイル置換 |
 | プリセット管理 | 一覧、ID一意性、作成・更新・削除・再読込の整合性 | ImGui状態、camera所有権 |
-| 永続化 | schema version 1の読書き、失敗時の旧データ保護 | scene状態、プレビュー状態 |
+| 永続化 | schema version 1・2の移行読込、version 3の読書き、失敗時の旧データ保護 | scene状態、プレビュー状態 |
 | camera preview | anchor相対値からworld poseを作り、安全なcamera更新境界で反映 | 永続化、UI widget状態 |
 
 編集セッションは「保存済み値」と「編集中値」を分けて保持する。camera previewは編集中値を一時的な入力として扱い、プリセット管理の確定済み一覧を書き換えない。これにより、リアルタイム編集、取消、保存失敗からの再試行を同じ状態モデルで扱う。
@@ -100,9 +102,10 @@
 - 編集中: 選択した保存済み値から編集中値を作る。値が異なればdirtyとする。
 - プレビュー中: active sceneとanchorが利用できる間、編集中値をカメラへ反映する。
 - 保存中: 入力検証と永続化を行う。成功すれば編集中値を新しい保存済み値とし、失敗すれば編集状態を保つ。
+- preview session中: editorはtransformとrevisionだけを送る。sceneとanchorの選択、camera pose、所有権はcamera側が管理する。
 - 終了処理中: 保存、破棄、または終了理由による安全なプレビュー解除を完了してから画面を閉じる。
 
-プレビュー中は編集状態に重なる一時状態であり、保存済みデータの状態ではない。scene終了やcamera所有権喪失でプレビューだけが終了しても、編集中値はUIに残せる。
+プレビュー中は編集状態に重なる一時状態であり、保存済みデータの状態ではない。editor表示中はゲーム時間を停止するため、通常のscene遷移をeditor状態として扱わない。camera所有権喪失、Apply失敗、ロード、new game、plugin resetでは確認を待たず、安全な復帰を優先する。
 
 ## 永続化要件
 
@@ -122,23 +125,25 @@ SKSE Menu Framework 3系を採用する。公式consumer APIが提供する次�
 仕様確認元は[SKSE Menu Framework 3](https://github.com/QTR-Modding/SKSE-Menu-Framework-3)と[公式consumer API header](https://github.com/QTR-Modding/SKSE-Menu-Framework-3-API)とする。
 
 - Mod Control PanelへMod固有のページを登録できる。
-- 独立したwindowを登録でき、ゲームをpauseしないwindowとして構成できる。
+- 独立したinput-blocking windowを登録できる。
 - menuのopen/close eventを購読できる。
 - frameworkの導入有無とversionを実行時に確認できる。
 - inputの捕捉と、blocking windowが開いているかの確認ができる。
 - ImGui APIはframework側のconsumer headerを介して利用する。
 
-リアルタイム編集ではゲームのcamera updateが継続する必要があるため、Mod Control Panel内の導線から専用editor windowを開く。editor表示中はゲーム時間とcamera updateを止めず、mouse、keyboard、gamepad入力はeditorへ捕捉して通常操作へ漏らさない。
+リアルタイム編集ではcamera updateが継続する必要があるため、Mod Control Panel内の導線から専用editor windowを開く。editor表示中はゲーム時間を停止し、mouse、keyboard、gamepad入力をeditorへ捕捉する一方、preview用camera updateだけを継続する。
 
-SKSE Menu Frameworkの現行実装では、`AddWindow(..., false)`で作ったnon-blocking windowしか開いていない場合、ImGui入力自体が無効化される。このためeditorはframework上ではinput-blocking windowとして登録し、Mod Control Panel本体を閉じたうえで、editor表示中の時間停止だけを解除する。これにより「ゲーム入力はeditorが捕捉するが、camera updateは継続する」という要件を分離して満たす。
+editorはframework上のinput-blocking windowとして登録し、Mod Control Panel本体を閉じる。時間停止と入力捕捉はframeworkに委ね、camera hook側ではpreview session中の更新だけを許可する。
 
 menu close eventはプレビュー解除の境界に使う。専用editorのClose操作では未保存変更を保存、破棄、編集継続から選ぶ。framework側のmenu closeでは未保存値をeditorに保持したままプレビューだけを解除し、再度editorを開いたときに編集を続けられる。open/close event APIを利用するため、SKSE Menu Framework 3.4以降を必要versionとする。frameworkはsoft dependencyとし、未導入または必要version未満の場合はmenu登録だけを行わず、既存のプリセット読込とcamera機能を維持する。
+
+editorを開けるのはcamera poseが適用済みの場合に限る。editor openはpreview sessionとして通知する。数値変更ごとにrevisionを発行し、そのrevisionのpose適用が確認できるまで保存を無効にする。所有権喪失などでlive previewが成立しなくなった場合は編集操作をロックする。プリセット0件では、active sceneからcamera制御を取得可能な場合に限り、標準値の新規draftからpreview開始を試みる。
 
 初版editorが表示する要素:
 
 - プリセット一覧と選択状態
 - ID入力
-- right、forward、upの数値入力
+- Pan Right、Pan Upと、orbit yaw、pitch、distanceの数値入力
 - 現在のcamera位置から値を取得する操作
 - 新規保存、上書き保存、取消、削除、再読込
 - dirty状態、プレビュー可否、入力または保存エラー
@@ -148,21 +153,23 @@ menu close eventはプレビュー解除の境界に使う。専用editorのClos
 - 一覧、作成、更新、削除、再読込の各操作がゲーム内UIから行える。
 - 数値を連続して動かすと、active sceneのカメラが同時に追従する。
 - 保存前、保存後、取消後の構図がそれぞれ定義どおりになる。
-- scene終了、アニメーション変更、camera所有権喪失、ロード、new gameの各境界でプレビューが残留しない。
+- editor表示中はゲーム時間を停止し、preview用camera updateだけを継続する。
+- editorを閉じた状態でsceneが終了した場合は直ちにcamera制御を返す。
+- camera所有権喪失、Apply失敗、ロード、new game、plugin resetではpreview sessionにかかわらずプレビューが残留しない。
 - 重複ID、不正数値、書込失敗、壊れた外部ファイルで正常な保存データを失わない。
 - SKSE Menu Frameworkがない環境でも、menu以外の既存機能が変わらない。
-- unit testでデータ操作と編集状態を、ゲーム内確認で非停止UIとcamera追従を検証できる。
+- unit testでデータ操作と編集状態を、ゲーム内確認で時間停止、input捕捉、camera追従を検証できる。
 
 ## 検証状況
 
-- schema version 1の読込、作成、更新、削除、再読込、重複ID、不正値、壊れた外部ファイルからの再読込をunit testで確認済み。
-- アンカー相対offsetとworld位置の相互変換をunit testで確認済み。
+- schema version 1・2から3への移行、version 3の読込、作成、更新、削除、再読込、重複ID、不正値、壊れた外部ファイルからの再読込をunit testで確認済み。
+- 画面相対framing offset・orbitからworld poseへの変換と、framing offset 0でのworld位置からorbitへの逆変換をunit testで確認済み。
 - SKSE Menu Framework consumer headerを含むDLLのコンパイル、リンク、SKSE export、依存DLL検査に成功済み。
-- 非停止window、連続数値操作への追従、入力競合、menu close、scene境界、SmoothCam所有権喪失はゲーム内確認待ち。
+- pause中の連続数値操作への追従、input競合、Close後の復帰、SmoothCam所有権喪失はゲーム内確認待ち。
 
 ## 未決事項
 
-- offsetの上下限、数値入力のstep、細かい調整用のmodifier。
+- framing offsetとdistanceの実用的な上下限、数値入力のstep、細かい調整用のmodifier。
 - 選択中プリセットを次回起動でも記憶するか。
 - scene外で新規プリセットの数値入力だけを許可するか。
 - IDとは別の表示名とrenameを将来schemaへ追加するか。

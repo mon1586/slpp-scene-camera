@@ -1,13 +1,17 @@
 #include "core/CameraPose.h"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numbers>
 
 namespace ssc::core
 {
     namespace
     {
         constexpr double kDirectionEpsilon = 1.0e-6;
+        constexpr double kDegreesToRadians = std::numbers::pi_v<double> / 180.0;
+        constexpr double kRadiansToDegrees = 180.0 / std::numbers::pi_v<double>;
 
         struct Vec3d
         {
@@ -74,11 +78,15 @@ namespace ssc::core
 
     std::optional<CameraPose> CameraPoseCalculator::Evaluate(
         const SceneAnchor& a_anchor,
-        const CameraOffset& a_offset) const noexcept
+        const CameraRig& a_rig) const noexcept
     {
+        const auto& framingOffset = a_rig.framingOffset;
+        const auto& orbit = a_rig.orbit;
         if (!IsFinite(a_anchor.position) || !IsFinite(a_anchor.forward) ||
-            !std::isfinite(a_offset.right) || !std::isfinite(a_offset.forward) ||
-            !std::isfinite(a_offset.up)) {
+            !std::isfinite(framingOffset.right) || !std::isfinite(framingOffset.up) ||
+            !std::isfinite(orbit.yawDegrees) ||
+            !std::isfinite(orbit.pitchDegrees) || !std::isfinite(orbit.distance) ||
+            orbit.distance <= kDirectionEpsilon) {
             return std::nullopt;
         }
 
@@ -93,14 +101,39 @@ namespace ssc::core
 
         constexpr Vec3d worldUp{ 0.0, 0.0, 1.0 };
         const auto anchorRight = Cross(*anchorForward, worldUp);
-        const Vec3d cameraPositionDouble{
+        const auto yaw = static_cast<double>(orbit.yawDegrees) * kDegreesToRadians;
+        const auto pitch = static_cast<double>(orbit.pitchDegrees) * kDegreesToRadians;
+        const auto sineYaw = std::sin(yaw);
+        const auto cosineYaw = std::cos(yaw);
+        const auto sinePitch = std::sin(pitch);
+        const auto cosinePitch = std::cos(pitch);
+        const Vec3d viewForward{
+            anchorRight.x * (-sineYaw * cosinePitch) +
+                anchorForward->x * (cosineYaw * cosinePitch),
+            anchorRight.y * (-sineYaw * cosinePitch) +
+                anchorForward->y * (cosineYaw * cosinePitch),
+            -sinePitch,
+        };
+        const Vec3d cameraRight{
+            anchorRight.x * cosineYaw + anchorForward->x * sineYaw,
+            anchorRight.y * cosineYaw + anchorForward->y * sineYaw,
+            0.0,
+        };
+        const auto cameraUp = Cross(cameraRight, viewForward);
+        const Vec3d framingCenter{
             static_cast<double>(a_anchor.position.x) +
-                anchorRight.x * static_cast<double>(a_offset.right) +
-                anchorForward->x * static_cast<double>(a_offset.forward),
+                cameraRight.x * static_cast<double>(framingOffset.right) +
+                cameraUp.x * static_cast<double>(framingOffset.up),
             static_cast<double>(a_anchor.position.y) +
-                anchorRight.y * static_cast<double>(a_offset.right) +
-                anchorForward->y * static_cast<double>(a_offset.forward),
-            static_cast<double>(a_anchor.position.z) + static_cast<double>(a_offset.up),
+                cameraRight.y * static_cast<double>(framingOffset.right) +
+                cameraUp.y * static_cast<double>(framingOffset.up),
+            static_cast<double>(a_anchor.position.z) +
+                cameraUp.z * static_cast<double>(framingOffset.up),
+        };
+        const Vec3d cameraPositionDouble{
+            framingCenter.x - viewForward.x * static_cast<double>(orbit.distance),
+            framingCenter.y - viewForward.y * static_cast<double>(orbit.distance),
+            framingCenter.z - viewForward.z * static_cast<double>(orbit.distance),
         };
 
         const auto positionX = ToFiniteFloat(cameraPositionDouble.x);
@@ -111,32 +144,34 @@ namespace ssc::core
         }
         const Vec3 cameraPosition{ *positionX, *positionY, *positionZ };
 
-        const auto viewForward = Normalize({
-            static_cast<double>(a_anchor.position.x) - cameraPosition.x,
-            static_cast<double>(a_anchor.position.y) - cameraPosition.y,
-            static_cast<double>(a_anchor.position.z) - cameraPosition.z,
+        const auto normalizedViewForward = Normalize({
+            framingCenter.x - cameraPosition.x,
+            framingCenter.y - cameraPosition.y,
+            framingCenter.z - cameraPosition.z,
         });
-        if (!viewForward) {
+        if (!normalizedViewForward) {
             return std::nullopt;
         }
 
-        auto cameraRight = Normalize(Cross(*viewForward, worldUp));
-        if (!cameraRight) {
-            cameraRight = Normalize(anchorRight);
+        auto normalizedCameraRight = Normalize(Cross(*normalizedViewForward, worldUp));
+        if (!normalizedCameraRight) {
+            normalizedCameraRight = Normalize(cameraRight);
         }
-        if (!cameraRight) {
+        if (!normalizedCameraRight) {
             return std::nullopt;
         }
 
-        const auto cameraUp = Normalize(Cross(*cameraRight, *viewForward));
-        if (!cameraUp) {
+        const auto normalizedCameraUp = Normalize(Cross(
+            *normalizedCameraRight,
+            *normalizedViewForward));
+        if (!normalizedCameraUp) {
             return std::nullopt;
         }
 
         const CameraBasis basis{
-            ToVec3(*viewForward),
-            ToVec3(*cameraUp),
-            ToVec3(*cameraRight),
+            ToVec3(*normalizedViewForward),
+            ToVec3(*normalizedCameraUp),
+            ToVec3(*normalizedCameraRight),
         };
         if (!IsFinite(basis.viewForward) || !IsFinite(basis.up) || !IsFinite(basis.right)) {
             return std::nullopt;
@@ -145,7 +180,7 @@ namespace ssc::core
         return CameraPose{ cameraPosition, basis };
     }
 
-    std::optional<CameraOffset> CameraPoseCalculator::ExtractOffset(
+    std::optional<CameraRig> CameraPoseCalculator::ExtractRig(
         const SceneAnchor& a_anchor,
         const Vec3& a_cameraPosition) const noexcept
     {
@@ -178,6 +213,29 @@ namespace ssc::core
         if (!right || !forward || !up) {
             return std::nullopt;
         }
-        return CameraOffset{ *right, *forward, *up };
+        const auto distance = std::hypot(
+            static_cast<double>(*right),
+            static_cast<double>(*forward),
+            static_cast<double>(*up));
+        if (!std::isfinite(distance) || distance <= kDirectionEpsilon) {
+            return std::nullopt;
+        }
+        const auto yaw = std::atan2(
+            static_cast<double>(*right),
+            -static_cast<double>(*forward)) * kRadiansToDegrees;
+        const auto pitch = std::asin(std::clamp(
+            static_cast<double>(*up) / distance,
+            -1.0,
+            1.0)) * kRadiansToDegrees;
+        const auto yawFloat = ToFiniteFloat(yaw);
+        const auto pitchFloat = ToFiniteFloat(pitch);
+        const auto distanceFloat = ToFiniteFloat(distance);
+        if (!yawFloat || !pitchFloat || !distanceFloat) {
+            return std::nullopt;
+        }
+        return CameraRig{
+            {},
+            { *yawFloat, *pitchFloat, *distanceFloat },
+        };
     }
 }

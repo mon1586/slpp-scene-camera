@@ -70,6 +70,11 @@ namespace ssc
                resetRequested_.load(std::memory_order_acquire) || previewChanged;
     }
 
+    bool SceneCamera::AllowsUpdateWhilePaused() const noexcept
+    {
+        return previewService_ && previewService_->PreviewSessionActive();
+    }
+
     void SceneCamera::HandleSceneEvent(const runtime::SceneEvent& a_event)
     {
         switch (a_event.type) {
@@ -95,14 +100,6 @@ namespace ssc
         const runtime::SceneKey& a_key,
         const runtime::SceneParticipantSnapshot& a_participants)
     {
-        if (session_.IsActive()) {
-            if (!session_.Matches(a_key)) {
-                logger::info("Ignoring overlapping scene {:08X}/{} while another player scene is active",
-                    a_key.sourceID, a_key.instanceID);
-            }
-            return;
-        }
-
         if (!a_participants.ContainsPlayer()) {
             logger::info("Ignoring scene {:08X}/{}: player is not a participant",
                 a_key.sourceID, a_key.instanceID);
@@ -144,6 +141,10 @@ namespace ssc
 
         if (!a_event.participants.ContainsPlayer()) {
             logger::warn("Prepared scene no longer contains the player; abandoning camera switch");
+            session_.Clear();
+            participants_ = {};
+            anchorCapturePending_.store(false, std::memory_order_release);
+            anchorCaptureReadyAt_ = {};
             Clear();
             return;
         }
@@ -169,7 +170,6 @@ namespace ssc
                 a_event.key.sourceID, a_event.key.instanceID);
             return;
         }
-
         anchorCaptureReadyAt_ = std::chrono::steady_clock::now() + kAnimationChangeDelay;
         anchorCapturePending_.store(true, std::memory_order_release);
         logger::info("Scene anchor recapture scheduled in {} ms for {:08X}/{}",
@@ -202,22 +202,29 @@ namespace ssc
     void SceneCamera::Update()
     {
         ApplyRequestedReset();
-        if (!session_.IsActive()) {
-            appliedPreviewRequest_ = previewService_ ? previewService_->Request() : nullptr;
+        const auto previewRequest = previewService_ ? previewService_->Request() : nullptr;
+        const auto previewSessionActive = previewService_ &&
+            previewService_->PreviewSessionActive();
+        if (!session_.IsActive() && !cameraPose_) {
+            appliedPreviewRequest_ = previewRequest;
             return;
         }
         if (debugVisualization_) {
             debugVisualization_->Update();
         }
         const auto now = std::chrono::steady_clock::now();
-        if (now - activeSince_ > kMaximumSceneDuration) {
+        if (session_.IsActive() && now - activeSince_ > kMaximumSceneDuration) {
             Restore("scene watchdog timeout"sv);
             return;
         }
 
-        const auto previewRequest = previewService_ ? previewService_->Request() : nullptr;
+        if (cameraPose_ && !previewSessionActive && !ResolveTransform(previewRequest)) {
+            PublishPreviewFeedback(false, "No camera preset is available");
+            Restore("preset editor closed with no camera preset"sv);
+            return;
+        }
         if (anchor_ && previewRequest != appliedPreviewRequest_) {
-            if (!ApplyRequestedPreset(previewRequest, true)) {
+            if (!ApplyRequestedTransform(previewRequest, true)) {
                 return;
             }
         }
@@ -236,6 +243,9 @@ namespace ssc
                     return;
                 }
             }
+        }
+        if (!session_.IsActive()) {
+            return;
         }
         if (!anchorCapturePending_.load(std::memory_order_acquire)) {
             return;
@@ -288,41 +298,62 @@ namespace ssc
             anchor_->forward.z);
 
         const auto request = previewService_ ? previewService_->Request() : nullptr;
-        static_cast<void>(ApplyRequestedPreset(request, false));
+        static_cast<void>(ApplyRequestedTransform(request, false));
     }
 
-    std::optional<runtime::CameraPreset> SceneCamera::ResolvePreset(
+    std::optional<runtime::PresetTransform> SceneCamera::ResolveTransform(
         const std::shared_ptr<const runtime::PresetPreviewRequest>& a_request) const
     {
-        if (a_request && a_request->preset) {
-            return a_request->preset;
+        if (a_request && a_request->transform) {
+            return a_request->transform;
         }
         const auto snapshot = presetProvider_ ? presetProvider_->Snapshot() : nullptr;
         if (!snapshot || snapshot->empty()) {
             return std::nullopt;
         }
-        return snapshot->front();
+        return snapshot->front().transform;
     }
 
-    bool SceneCamera::ApplyRequestedPreset(
+    bool SceneCamera::ApplyRequestedTransform(
         const std::shared_ptr<const runtime::PresetPreviewRequest>& a_request,
         bool a_liveEdit)
     {
-        const auto preset = ResolvePreset(a_request);
-        if (!preset) {
+        const auto transform = ResolveTransform(a_request);
+        if (!transform) {
             appliedPreviewRequest_ = a_request;
-            PublishPreviewFeedback(false, "No camera preset is available");
             if (cameraControl_ && cameraControl_->OwnsCamera()) {
+                if (previewService_ && previewService_->PreviewSessionActive() && cameraPose_) {
+                    const auto feedback = previewService_->Feedback();
+                    PublishPreviewFeedback(
+                        true,
+                        "No preset selected; camera held by preset editor",
+                        feedback ? feedback->currentTransform : std::nullopt,
+                        true,
+                        feedback ? feedback->appliedRevision : 0);
+                    return true;
+                }
+                PublishPreviewFeedback(false, "No camera preset is available");
                 Restore("no camera preset remains"sv);
                 return false;
             }
+            const auto previewPossible = anchor_.has_value() && cameraControl_ &&
+                cameraControl_->CanAcquire();
+            const auto message = cameraControl_ && !previewPossible ?
+                std::string{ cameraControl_->UnavailableReason() } :
+                std::string{ "No camera preset is available" };
+            PublishPreviewFeedback(
+                false,
+                message,
+                std::nullopt,
+                previewPossible);
             if (!a_liveEdit) {
                 logger::warn("No valid camera preset is available; SmoothCam remains in control");
             }
             return true;
         }
 
-        if (!ApplyPreset(*preset, a_liveEdit)) {
+        const auto revision = a_request && a_request->transform ? a_request->revision : 0;
+        if (!ApplyTransform(*transform, a_liveEdit, revision)) {
             appliedPreviewRequest_ = previewService_ ? previewService_->Request() : a_request;
             return false;
         }
@@ -330,9 +361,10 @@ namespace ssc
         return true;
     }
 
-    bool SceneCamera::ApplyPreset(
-        const runtime::CameraPreset& a_preset,
-        bool a_liveEdit)
+    bool SceneCamera::ApplyTransform(
+        const runtime::PresetTransform& a_transform,
+        bool a_liveEdit,
+        std::uint64_t a_revision)
     {
         if (!anchor_) {
             PublishPreviewFeedback(false, "Scene anchor is not available");
@@ -341,14 +373,20 @@ namespace ssc
         const auto corePose = poseCalculator_.Evaluate(
             *anchor_,
             {
-                a_preset.offset.right,
-                a_preset.offset.forward,
-                a_preset.offset.up,
+                {
+                    a_transform.framingOffset.right,
+                    a_transform.framingOffset.up,
+                },
+                {
+                    a_transform.orbit.yawDegrees,
+                    a_transform.orbit.pitchDegrees,
+                    a_transform.orbit.distance,
+                },
             });
         if (!corePose) {
             PublishPreviewFeedback(false, "Preset cannot produce a camera pose");
             if (!a_liveEdit) {
-                logger::error("Camera pose generation failed for preset '{}'", a_preset.id);
+                logger::error("Camera pose generation failed for the selected transform");
                 Restore("camera pose generation failed"sv);
             }
             return false;
@@ -369,8 +407,9 @@ namespace ssc
         const auto acquiredNow = !cameraControl_->OwnsCamera();
         if (acquiredNow) {
             if (!cameraControl_->CanAcquire()) {
-                logger::warn("SmoothCam cannot currently yield camera control");
-                PublishPreviewFeedback(false, "SmoothCam cannot currently yield camera control");
+                const auto reason = cameraControl_->UnavailableReason();
+                logger::warn("Cannot acquire scene camera: {}", reason);
+                PublishPreviewFeedback(false, std::string{ reason });
                 return false;
             }
             if (!cameraControl_->Acquire()) {
@@ -383,9 +422,7 @@ namespace ssc
         const auto runtimePose = runtime::ToRuntimeCameraPose(*corePose);
         const auto applyResult = cameraControl_->Apply(runtimePose);
         if (applyResult != runtime::CameraApplyResult::kApplied) {
-            logger::error("Could not apply camera preset '{}': {}",
-                a_preset.id,
-                ApplyResultName(applyResult));
+            logger::error("Could not apply camera transform: {}", ApplyResultName(applyResult));
             PublishPreviewFeedback(false, std::string{ ApplyResultName(applyResult) });
             Restore(acquiredNow ?
                 "initial camera pose apply failed"sv :
@@ -395,22 +432,17 @@ namespace ssc
 
         cameraPose_ = runtimePose;
         cameraPoseActive_.store(true, std::memory_order_release);
-        const auto extracted = poseCalculator_.ExtractOffset(
-            *anchor_,
-            ToCore(runtimePose.position));
         PublishPreviewFeedback(
             true,
             a_liveEdit ? "Live preview" : "Preset active",
-            extracted ? std::optional{ runtime::PresetOffset{
-                extracted->right,
-                extracted->forward,
-                extracted->up } } : std::nullopt);
+            a_transform,
+            true,
+            a_revision);
         if (a_liveEdit) {
-            logger::debug("Camera preset '{}' live preview applied", a_preset.id);
+            logger::debug("Camera transform revision {} live preview applied", a_revision);
         } else {
             logger::info(
-                "Camera preset '{}' applied at ({:.2f}, {:.2f}, {:.2f})",
-                a_preset.id,
+                "Camera transform applied at ({:.2f}, {:.2f}, {:.2f})",
                 runtimePose.position.x,
                 runtimePose.position.y,
                 runtimePose.position.z);
@@ -421,7 +453,9 @@ namespace ssc
     void SceneCamera::PublishPreviewFeedback(
         bool a_applied,
         std::string a_message,
-        std::optional<runtime::PresetOffset> a_offset)
+        std::optional<runtime::PresetTransform> a_transform,
+        bool a_previewPossible,
+        std::uint64_t a_appliedRevision)
     {
         if (!previewService_) {
             return;
@@ -429,7 +463,9 @@ namespace ssc
         previewService_->PublishFeedback({
             session_.IsActive(),
             a_applied,
-            std::move(a_offset),
+            a_previewPossible,
+            a_appliedRevision,
+            std::move(a_transform),
             std::move(a_message),
         });
     }
@@ -438,7 +474,9 @@ namespace ssc
     {
         const auto hadSession = !session_.IsIdle();
         const auto hadCameraOwnership = cameraControl_ && cameraControl_->OwnsCamera();
-        if (!hadSession && !hadCameraOwnership) {
+        const auto hadRuntimeState = hadSession || hadCameraOwnership ||
+            cameraPose_.has_value() || anchor_.has_value();
+        if (!hadRuntimeState) {
             return;
         }
 
@@ -502,6 +540,7 @@ namespace ssc
         anchorCapturePending_.store(false, std::memory_order_release);
         cameraPoseActive_.store(false, std::memory_order_release);
         anchorCaptureReadyAt_ = {};
+        activeSince_ = {};
         if (debugVisualization_) {
             debugVisualization_->HideAnchor();
         }
@@ -509,9 +548,6 @@ namespace ssc
         appliedPreviewRequest_.reset();
         anchor_.reset();
         session_.Clear();
-        if (previewService_) {
-            previewService_->ClearPreview();
-        }
         PublishPreviewFeedback(false, "No active player scene");
     }
 }

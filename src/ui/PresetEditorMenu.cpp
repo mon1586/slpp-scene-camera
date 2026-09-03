@@ -1,5 +1,7 @@
 #include "ui/PresetEditorMenu.h"
 
+#include "ui/PresetEditorPolicy.h"
+
 #include "runtime/PresetPreviewService.h"
 #include "runtime/PresetRepository.h"
 
@@ -13,12 +15,6 @@ namespace ssc::ui
     namespace
     {
         constexpr float kMinimumFrameworkVersion = 3.4F;
-        constexpr runtime::PresetOffset kDefaultPresetOffset{
-            0.0F,
-            -200.0F,
-            60.0F,
-        };
-
         enum class PendingAction
         {
             kNone,
@@ -37,8 +33,9 @@ namespace ssc::ui
             std::array<char, 128> idBuffer{};
             std::string selectedID;
             std::string pendingID;
-            runtime::PresetOffset savedOffset{};
-            runtime::PresetOffset draftOffset{};
+            runtime::PresetTransform savedTransform{};
+            runtime::PresetTransform draftTransform{};
+            std::uint64_t draftRevision{ 0 };
             std::string message;
             PendingAction pendingAction{ PendingAction::kNone };
             bool creating{ false };
@@ -48,13 +45,15 @@ namespace ssc::ui
 
         EditorState state;
 
-        [[nodiscard]] bool SameOffset(
-            const runtime::PresetOffset& a_left,
-            const runtime::PresetOffset& a_right) noexcept
+        [[nodiscard]] bool SameTransform(
+            const runtime::PresetTransform& a_left,
+            const runtime::PresetTransform& a_right) noexcept
         {
-            return a_left.right == a_right.right &&
-                   a_left.forward == a_right.forward &&
-                   a_left.up == a_right.up;
+            return a_left.framingOffset.right == a_right.framingOffset.right &&
+                   a_left.framingOffset.up == a_right.framingOffset.up &&
+                   a_left.orbit.yawDegrees == a_right.orbit.yawDegrees &&
+                   a_left.orbit.pitchDegrees == a_right.orbit.pitchDegrees &&
+                   a_left.orbit.distance == a_right.orbit.distance;
         }
 
         void SetIDBuffer(std::string_view a_id)
@@ -71,21 +70,22 @@ namespace ssc::ui
 
         void PublishDraft()
         {
-            runtime::CameraPreset candidate{ DraftID(), state.draftOffset };
-            if (const auto error = runtime::ValidateCameraPreset(candidate); !error.empty()) {
+            if (const auto error = runtime::ValidatePresetTransform(state.draftTransform);
+                !error.empty()) {
                 state.message = error;
                 return;
             }
-            runtime::PresetPreviewService::GetSingleton()->SetPreview(candidate);
-            state.message = "Preview requested";
+            state.draftRevision = runtime::PresetPreviewService::GetSingleton()->SetPreview(
+                state.draftTransform);
+            state.message = "Preview pending";
         }
 
         void SelectPreset(const runtime::CameraPreset& a_preset)
         {
             state.selectedID = a_preset.id;
             SetIDBuffer(a_preset.id);
-            state.savedOffset = a_preset.offset;
-            state.draftOffset = a_preset.offset;
+            state.savedTransform = a_preset.transform;
+            state.draftTransform = a_preset.transform;
             state.creating = false;
             state.dirty = false;
             state.message.clear();
@@ -101,8 +101,8 @@ namespace ssc::ui
             }
             state.selectedID.clear();
             SetIDBuffer({});
-            state.savedOffset = {};
-            state.draftOffset = {};
+            state.savedTransform = {};
+            state.draftTransform = {};
             state.creating = false;
             state.dirty = false;
             runtime::PresetPreviewService::GetSingleton()->ClearPreview();
@@ -148,8 +148,8 @@ namespace ssc::ui
         {
             state.selectedID.clear();
             SetIDBuffer(NextPresetID());
-            state.savedOffset = kDefaultPresetOffset;
-            state.draftOffset = kDefaultPresetOffset;
+            state.savedTransform = kNewPresetTransform;
+            state.draftTransform = kNewPresetTransform;
             state.creating = true;
             state.dirty = true;
             PublishDraft();
@@ -158,14 +158,14 @@ namespace ssc::ui
         void BeginNewFromCurrent()
         {
             const auto feedback = runtime::PresetPreviewService::GetSingleton()->Feedback();
-            if (!feedback || !feedback->currentOffset) {
+            if (!feedback || !feedback->currentTransform) {
                 state.message = "An active scene camera is required";
                 return;
             }
             state.selectedID.clear();
             SetIDBuffer(NextPresetID());
-            state.savedOffset = *feedback->currentOffset;
-            state.draftOffset = *feedback->currentOffset;
+            state.savedTransform = *feedback->currentTransform;
+            state.draftTransform = *feedback->currentTransform;
             state.creating = true;
             state.dirty = true;
             PublishDraft();
@@ -173,8 +173,13 @@ namespace ssc::ui
 
         [[nodiscard]] bool SaveDraft()
         {
+            const auto feedback = runtime::PresetPreviewService::GetSingleton()->Feedback();
+            if (!IsLatestPreviewApplied(feedback.get(), state.draftRevision)) {
+                state.message = "Wait until the current values are visible in the preview";
+                return false;
+            }
             const auto id = DraftID();
-            const runtime::CameraPreset candidate{ id, state.draftOffset };
+            const runtime::CameraPreset candidate{ id, state.draftTransform };
             if (const auto error = runtime::ValidateCameraPreset(candidate); !error.empty()) {
                 state.message = error;
                 return false;
@@ -184,18 +189,17 @@ namespace ssc::ui
                 runtime::PresetRepository::GetSingleton()->Create(candidate) :
                 runtime::PresetRepository::GetSingleton()->Update(
                     state.selectedID,
-                    state.draftOffset);
+                    state.draftTransform);
             if (!result.succeeded) {
                 state.message = result.error;
                 return false;
             }
 
             state.selectedID = id;
-            state.savedOffset = state.draftOffset;
+            state.savedTransform = state.draftTransform;
             state.creating = false;
             state.dirty = false;
             state.message = "Saved";
-            PublishDraft();
             logger::info("Camera preset '{}' saved", id);
             return true;
         }
@@ -206,7 +210,7 @@ namespace ssc::ui
                 SelectFirstPreset();
                 return;
             }
-            state.draftOffset = state.savedOffset;
+            state.draftTransform = state.savedTransform;
             state.dirty = false;
             state.message = "Changes discarded";
             PublishDraft();
@@ -226,7 +230,9 @@ namespace ssc::ui
 
         void CloseEditor()
         {
-            runtime::PresetPreviewService::GetSingleton()->ClearPreview();
+            auto* previewService = runtime::PresetPreviewService::GetSingleton();
+            previewService->EndPreviewSession();
+            previewService->ClearPreview();
             if (state.window) {
                 state.window->IsOpen.store(false, std::memory_order_release);
             }
@@ -338,7 +344,24 @@ namespace ssc::ui
             if (!state.window) {
                 return;
             }
-            if (state.selectedID.empty() && !state.creating) {
+            auto* previewService = runtime::PresetPreviewService::GetSingleton();
+            const auto feedback = previewService->Feedback();
+            const auto snapshot = runtime::PresetRepository::GetSingleton()->Snapshot();
+            const auto noPresets = !snapshot || snapshot->empty();
+            const auto canRecoverEmpty = noPresets && feedback && feedback->sceneActive &&
+                feedback->previewPossible && !feedback->previewApplied;
+            if (!CanOpenPresetEditor(feedback.get(), noPresets)) {
+                return;
+            }
+
+            previewService->BeginPreviewSession();
+            if (canRecoverEmpty) {
+                if (state.creating) {
+                    PublishDraft();
+                } else {
+                    BeginNew();
+                }
+            } else if (state.selectedID.empty() && !state.creating) {
                 SelectFirstPreset();
             } else {
                 PublishDraft();
@@ -350,24 +373,26 @@ namespace ssc::ui
             logger::info("Preset editor opened");
         }
 
-        void KeepGameRunningForLivePreview() noexcept
-        {
-            if (auto* main = RE::Main::GetSingleton()) {
-                main->GetRuntimeData().freezeTime = false;
-            }
-        }
-
         void __stdcall RenderSection()
         {
             try {
                 ImGuiMCP::TextWrapped(
                     "Create and edit scene-relative camera presets. Clearance is not evaluated yet.");
+                const auto feedback = runtime::PresetPreviewService::GetSingleton()->Feedback();
+                const auto snapshot = runtime::PresetRepository::GetSingleton()->Snapshot();
+                const auto noPresets = !snapshot || snapshot->empty();
+                const auto canOpen = CanOpenPresetEditor(feedback.get(), noPresets);
+                ImGuiMCP::BeginDisabled(!canOpen);
                 if (ImGuiMCP::Button("Open preset editor")) {
                     OpenEditor();
                 }
-                const auto feedback = runtime::PresetPreviewService::GetSingleton()->Feedback();
+                ImGuiMCP::EndDisabled();
                 if (feedback) {
                     ImGuiMCP::TextDisabled("Camera: %s", feedback->message.c_str());
+                }
+                if (!canOpen) {
+                    ImGuiMCP::TextDisabled(
+                        "The editor requires an active scene camera with preview control.");
                 }
             } catch (...) {
                 logger::error("SKSE Menu Framework preset page failed");
@@ -377,10 +402,8 @@ namespace ssc::ui
         void __stdcall RenderEditor()
         {
             try {
-                // SKSE Menu Framework only feeds input to blocking windows. Keep this
-                // window blocking for input capture, but undo its time freeze so the
-                // camera update path can consume live-preview requests.
-                KeepGameRunningForLivePreview();
+                // A blocking framework window owns input and pause state. The camera
+                // update hook explicitly permits preview updates while this session is open.
                 ImGuiMCP::SetNextWindowSize(
                     { 620.0F, 420.0F },
                     ImGuiMCP::ImGuiCond_FirstUseEver);
@@ -390,6 +413,16 @@ namespace ssc::ui
                 }
 
                 const auto snapshot = runtime::PresetRepository::GetSingleton()->Snapshot();
+                auto* previewService = runtime::PresetPreviewService::GetSingleton();
+                const auto feedback = previewService->Feedback();
+                const auto canEdit = CanEditPreset(
+                    feedback.get(), previewService->PreviewSessionActive());
+                if (!canEdit) {
+                    ImGuiMCP::TextWrapped(
+                        "Editing is locked until the scene camera can apply a live preview.");
+                }
+
+                ImGuiMCP::BeginDisabled(!canEdit);
                 const auto previewLabel = state.creating ? "<new preset>" :
                     (state.selectedID.empty() ? "<none>" : state.selectedID.c_str());
                 if (ImGuiMCP::BeginCombo("Preset", previewLabel)) {
@@ -409,8 +442,7 @@ namespace ssc::ui
                         "No presets. Create one from the standard position or an active camera.");
                 }
 
-                const auto feedback = runtime::PresetPreviewService::GetSingleton()->Feedback();
-                const auto canCapture = feedback && feedback->currentOffset.has_value();
+                const auto canCapture = feedback && feedback->currentTransform.has_value();
                 if (ImGuiMCP::Button("New preset")) {
                     RequestAction(PendingAction::kNew);
                 }
@@ -429,16 +461,32 @@ namespace ssc::ui
                 ImGuiMCP::BeginDisabled(!state.creating);
                 if (ImGuiMCP::InputText("ID", state.idBuffer.data(), state.idBuffer.size())) {
                     state.dirty = true;
-                    PublishDraft();
                 }
                 ImGuiMCP::EndDisabled();
 
-                bool offsetChanged = false;
-                offsetChanged |= ImGuiMCP::DragFloat("Right", &state.draftOffset.right, 1.0F);
-                offsetChanged |= ImGuiMCP::DragFloat("Forward", &state.draftOffset.forward, 1.0F);
-                offsetChanged |= ImGuiMCP::DragFloat("Up", &state.draftOffset.up, 1.0F);
-                if (offsetChanged) {
-                    state.dirty = state.creating || !SameOffset(state.draftOffset, state.savedOffset);
+                ImGuiMCP::TextDisabled("Screen-relative framing");
+                bool transformChanged = false;
+                transformChanged |= ImGuiMCP::DragFloat(
+                    "Pan Right", &state.draftTransform.framingOffset.right, 1.0F);
+                transformChanged |= ImGuiMCP::DragFloat(
+                    "Pan Up", &state.draftTransform.framingOffset.up, 1.0F);
+
+                ImGuiMCP::TextDisabled("Orbit around the framing center");
+                transformChanged |= ImGuiMCP::DragFloat(
+                    "Yaw", &state.draftTransform.orbit.yawDegrees,
+                    0.25F, kMinimumYawDegrees, kMaximumYawDegrees, "%.1f deg",
+                    ImGuiMCP::ImGuiSliderFlags_AlwaysClamp);
+                transformChanged |= ImGuiMCP::DragFloat(
+                    "Pitch", &state.draftTransform.orbit.pitchDegrees,
+                    0.25F, kMinimumPitchDegrees, kMaximumPitchDegrees, "%.1f deg",
+                    ImGuiMCP::ImGuiSliderFlags_AlwaysClamp);
+                transformChanged |= ImGuiMCP::DragFloat(
+                    "Distance", &state.draftTransform.orbit.distance,
+                    1.0F, kMinimumDistance, kMaximumDistance, "%.1f",
+                    ImGuiMCP::ImGuiSliderFlags_AlwaysClamp);
+                if (transformChanged) {
+                    state.dirty = state.creating ||
+                        !SameTransform(state.draftTransform, state.savedTransform);
                     PublishDraft();
                 }
 
@@ -451,7 +499,8 @@ namespace ssc::ui
                 }
 
                 const auto hasDraft = state.creating || !state.selectedID.empty();
-                ImGuiMCP::BeginDisabled(!hasDraft || !state.dirty);
+                ImGuiMCP::BeginDisabled(!CanSavePreset(
+                    hasDraft, state.dirty, feedback.get(), state.draftRevision));
                 if (ImGuiMCP::Button("Save")) {
                     static_cast<void>(SaveDraft());
                 }
@@ -468,13 +517,24 @@ namespace ssc::ui
                     state.deleteConfirmation = true;
                 }
                 ImGuiMCP::EndDisabled();
+                ImGuiMCP::EndDisabled();
                 ImGuiMCP::SameLine();
                 if (ImGuiMCP::Button("Close")) {
-                    RequestAction(PendingAction::kClose);
+                    if (canEdit) {
+                        RequestAction(PendingAction::kClose);
+                    } else {
+                        CloseEditor();
+                    }
                 }
 
-                RenderUnsavedPopup();
-                RenderDeletePopup();
+                if (canEdit) {
+                    RenderUnsavedPopup();
+                    RenderDeletePopup();
+                } else {
+                    state.pendingAction = PendingAction::kNone;
+                    state.pendingID.clear();
+                    state.deleteConfirmation = false;
+                }
                 ImGuiMCP::End();
             } catch (const std::exception& exception) {
                 logger::error("SKSE Menu Framework preset editor failed: {}", exception.what());
@@ -485,9 +545,13 @@ namespace ssc::ui
 
         void __stdcall OnMenuEvent(SKSEMenuFramework::Model::EventType a_type)
         {
-            if (a_type == SKSEMenuFramework::Model::EventType::kCloseMenu &&
-                (!state.window || !state.window->IsOpen.load(std::memory_order_acquire))) {
-                runtime::PresetPreviewService::GetSingleton()->ClearPreview();
+            if (a_type == SKSEMenuFramework::Model::EventType::kCloseMenu) {
+                if (state.window) {
+                    state.window->IsOpen.store(false, std::memory_order_release);
+                }
+                auto* previewService = runtime::PresetPreviewService::GetSingleton();
+                previewService->EndPreviewSession();
+                previewService->ClearPreview();
             }
         }
     }
@@ -510,7 +574,7 @@ namespace ssc::ui
         SKSEMenuFramework::SetSection("Sexlab Scene Camera");
         SKSEMenuFramework::AddSectionItem("Camera Presets", RenderSection);
         state.mainWindow = SKSEMenuFramework::GetMainWindow();
-        state.window = SKSEMenuFramework::AddWindow(RenderEditor, true);
+        state.window = SKSEMenuFramework::AddWindow(RenderEditor, kEditorPausesGame);
         state.event = SKSEMenuFramework::AddEvent(OnMenuEvent, 0.0F);
         if (!state.mainWindow || !state.window || !state.event) {
             logger::error("SKSE Menu Framework preset editor registration failed");
@@ -518,5 +582,15 @@ namespace ssc::ui
         }
         logger::info("SKSE Menu Framework preset editor registered (version {:.2f})", version);
         return true;
+    }
+
+    void PresetEditorMenu::CloseForLifecycle() noexcept
+    {
+        if (state.window) {
+            state.window->IsOpen.store(false, std::memory_order_release);
+        }
+        auto* previewService = runtime::PresetPreviewService::GetSingleton();
+        previewService->EndPreviewSession();
+        previewService->ClearPreview();
     }
 }

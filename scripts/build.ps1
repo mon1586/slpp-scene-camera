@@ -63,9 +63,13 @@ try {
     )
 
     $targets = if ($TestsOnly) {
-        @('SexlabSceneCameraTests')
+        @('SexlabSceneCameraTests', 'SexlabSceneCameraPresetSettingsSpecTests')
     } else {
-        @('SexlabSceneCamera', 'SexlabSceneCameraTests')
+        @(
+            'SexlabSceneCamera',
+            'SexlabSceneCameraTests',
+            'SexlabSceneCameraPresetSettingsSpecTests'
+        )
     }
     $buildArguments = @(
         '--build', $BuildDirectory,

@@ -371,6 +371,11 @@ namespace ssc::runtime
             return;
         }
 
+        updateThunkActive_ = true;
+        SKSE::stl::scope_exit clearThunkActive{ []() noexcept {
+            updateThunkActive_ = false;
+        } };
+
         if (!firstThunkObserved_.load(std::memory_order_relaxed)) {
             bool expected = false;
             if (firstThunkObserved_.compare_exchange_strong(
@@ -392,7 +397,8 @@ namespace ssc::runtime
                 client->EmergencyReset();
                 return;
             }
-            if (auto* ui = RE::UI::GetSingleton(); !ui || !ui->GameIsPaused()) {
+            auto* ui = RE::UI::GetSingleton();
+            if (!ui || !ui->GameIsPaused() || client->AllowsUpdateWhilePaused()) {
                 client->Update();
             }
         } catch (const std::exception& exception) {
@@ -424,6 +430,11 @@ namespace ssc::runtime
     {
         if (installState_.load(std::memory_order_acquire) != InstallState::kInstalled) {
             return false;
+        }
+        // Reaching our thunk proves that a later vtable hook preserved us in its
+        // original-call chain even when it now occupies the visible slot.
+        if (updateThunkActive_) {
+            return true;
         }
 
         for (std::size_t index = 0; index < entryCount_; ++index) {

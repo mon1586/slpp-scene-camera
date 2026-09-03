@@ -2,7 +2,7 @@
 
 Native SKSE scene-camera plugin for SexLab P+ and SmoothCam.
 
-When a player-involved SexLab P+ scene reaches `AnimationStart`, the plugin captures a fixed scene anchor from the participants' Pelvis nodes after the camera update boundary. Its position is the Pelvis average; with multiple participants its forward points from that average toward the player Pelvis, and otherwise it falls back to the inverse of the player's horizontal forward. The first valid preset is converted from anchor-relative offsets into a camera pose, and a matching `AnimationChange` reapplies it after recapturing the anchor. Presets can be created, edited, deleted, and reloaded through an SKSE Menu Framework window; changing `right`, `forward`, or `up` requests a live camera preview without saving. Collision, LOS, and clearance selection are not implemented yet.
+When a player-involved SexLab P+ scene reaches `AnimationStart`, the plugin captures a fixed scene anchor from the participants' Pelvis nodes after the camera update boundary. Its position is the Pelvis average; with multiple participants its forward points from that average toward the player Pelvis, and otherwise it falls back to the inverse of the player's horizontal forward. The first valid preset defines screen-relative `Pan Right`/`Pan Up` framing plus a `yaw`/`pitch`/`distance` orbit, and a matching `AnimationChange` reapplies it after recapturing the anchor. Presets can be created, edited, deleted, and reloaded through an SKSE Menu Framework window; changing any framing or orbit value requests a live camera preview without saving. Collision, LOS, and clearance selection are not implemented yet.
 
 The POC has no ESP and no dedicated Papyrus script. SexLab P+ integration uses the native SKSE `ModCallbackEvent` dispatcher. P+ currently emits unprefixed `AnimationStart`/`AnimationChange`/`AnimationEnd` compatibility events alongside its documented Papyrus hook API. Because P+ passes `thread_id` as the second `SendModEvent` argument, the native adapter parses it from `strArg` and treats `numArg` only as a compatibility fallback. Generic event names are accepted only when the sender is a quest defined by `SexLab.esm`.
 
@@ -13,6 +13,8 @@ The POC has no ESP and no dedicated Papyrus script. SexLab P+ integration uses t
 - SexLab P+
 - SmoothCam 1.7.1
 - SKSE Menu Framework 3.4 or later (optional; required only for the in-game preset editor)
+
+Improved Camera is unsupported because it is known to compete for the same camera path. If `ImprovedCameraSE.dll` is loaded, Sexlab Scene Camera refuses to acquire camera control and reports the reason in the preset page.
 
 For an unambiguous test, disable SexLab's automatic free-camera/TFC option so it does not compete with the POC after the scene starts.
 
@@ -38,10 +40,11 @@ Install the contents of `dist` under `Data`. This includes the DLL and the initi
 2. Start a SexLab scene containing the player.
 3. Confirm the initial preset moves the camera and `SexlabSceneCamera.log` records the anchor and applied pose.
 4. Open Mod Control Panel, choose Sexlab Scene Camera > Camera Presets, and open the preset editor.
-5. Drag `right`, `forward`, and `up`; confirm game time remains active and the scene camera follows without saving.
+5. Drag `Pan Right`, `Pan Up`, then orbit `yaw`, `pitch`, and `distance`; confirm the scene camera follows while the blocking editor owns input and pauses game time.
 6. Exercise create, update, cancel, delete, and reload, including the unsaved-change and delete confirmations.
-7. Change the animation and confirm the edited offset is reapplied after the anchor recapture.
-8. End the scene and confirm camera ownership returns to SmoothCam with no draft preview left active.
+7. Confirm scene time and animation remain paused until the editor closes, then change the animation and confirm the saved framing offset and orbit are reapplied after anchor recapture.
+8. End a scene with the editor closed and confirm ownership returns to SmoothCam immediately.
 9. Remove or disable SKSE Menu Framework and confirm preset loading and the initial camera still work while the editor is absent.
+10. Load the game with Improved Camera enabled and confirm the preset page reports it as unsupported without acquiring camera control.
 
 The compiled DLL proves only that the native interfaces and code agree at build time. Menu behavior, input routing, camera-node behavior, and restoration still require the in-game validation above.

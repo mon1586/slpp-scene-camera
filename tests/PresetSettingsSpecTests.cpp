@@ -1,0 +1,274 @@
+#include "core/CameraPose.h"
+#include "runtime/PresetPreviewService.h"
+#include "runtime/PresetRepository.h"
+#include "ui/PresetEditorPolicy.h"
+
+#include <chrono>
+#include <cmath>
+#include <filesystem>
+#include <iostream>
+#include <string>
+#include <string_view>
+
+namespace
+{
+    bool Check(bool a_condition, std::string_view a_message)
+    {
+        if (!a_condition) {
+            std::cerr << "FAILED: " << a_message << '\n';
+        }
+        return a_condition;
+    }
+
+    bool CheckNear(float a_actual, float a_expected, std::string_view a_message)
+    {
+        return Check(std::abs(a_actual - a_expected) < 0.001F, a_message);
+    }
+
+    float Dot(const ssc::core::Vec3& a_left, const ssc::core::Vec3& a_right)
+    {
+        return a_left.x * a_right.x + a_left.y * a_right.y + a_left.z * a_right.z;
+    }
+
+    float Distance(const ssc::core::Vec3& a_left, const ssc::core::Vec3& a_right)
+    {
+        return std::hypot(
+            a_left.x - a_right.x,
+            a_left.y - a_right.y,
+            a_left.z - a_right.z);
+    }
+
+    ssc::core::CameraRig ToRig(const ssc::runtime::PresetTransform& a_transform)
+    {
+        return {
+            {
+                a_transform.framingOffset.right,
+                a_transform.framingOffset.up,
+            },
+            {
+                a_transform.orbit.yawDegrees,
+                a_transform.orbit.pitchDegrees,
+                a_transform.orbit.distance,
+            },
+        };
+    }
+
+    std::filesystem::path TemporaryPresetPath()
+    {
+        const auto suffix = std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+        return std::filesystem::temp_directory_path() /
+               ("ssc-settings-spec-" + suffix + ".json");
+    }
+}
+
+int main()
+{
+    using ssc::core::CameraPoseCalculator;
+    using ssc::core::SceneAnchor;
+    using ssc::core::Vec3;
+    using ssc::runtime::PresetPreviewFeedback;
+    using ssc::runtime::PresetTransform;
+
+    bool passed = true;
+
+    passed &= Check(ssc::ui::kEditorPausesGame,
+        "preset editor pauses game time while it owns input");
+    const auto defaults = ssc::ui::kNewPresetTransform;
+    passed &= CheckNear(defaults.framingOffset.right, 0.0F,
+        "New preset starts with Pan Right 0");
+    passed &= CheckNear(defaults.framingOffset.up, 60.0F,
+        "New preset starts with Pan Up 60");
+    passed &= CheckNear(defaults.orbit.yawDegrees, 0.0F,
+        "New preset starts with Yaw 0");
+    passed &= CheckNear(defaults.orbit.pitchDegrees, 0.0F,
+        "New preset starts with Pitch 0");
+    passed &= CheckNear(defaults.orbit.distance, 200.0F,
+        "New preset starts with Distance 200");
+    passed &= CheckNear(ssc::ui::kMinimumYawDegrees, -180.0F,
+        "editor yaw minimum is -180 degrees");
+    passed &= CheckNear(ssc::ui::kMaximumYawDegrees, 180.0F,
+        "editor yaw maximum is 180 degrees");
+    passed &= CheckNear(ssc::ui::kMinimumPitchDegrees, -89.9F,
+        "editor pitch minimum avoids the lower pole");
+    passed &= CheckNear(ssc::ui::kMaximumPitchDegrees, 89.9F,
+        "editor pitch maximum avoids the upper pole");
+    passed &= CheckNear(ssc::ui::kMinimumDistance, 0.1F,
+        "editor distance minimum is 0.1 Skyrim unit");
+    passed &= CheckNear(ssc::ui::kMaximumDistance, 100000.0F,
+        "editor distance maximum is 100000 Skyrim units");
+    passed &= Check(ssc::runtime::ValidatePresetTransform(defaults).empty(),
+        "New preset defaults are valid preview values");
+
+    const SceneAnchor anchor{ { 0.0F, 0.0F, 0.0F }, { 0.0F, 1.0F, 0.0F } };
+    CameraPoseCalculator calculator;
+
+    const auto defaultPose = calculator.Evaluate(anchor, ToRig(defaults));
+    passed &= Check(defaultPose.has_value(), "New preset defaults produce a camera pose");
+    if (defaultPose) {
+        passed &= CheckNear(defaultPose->position.x, 0.0F,
+            "Yaw 0 stays centered horizontally");
+        passed &= CheckNear(defaultPose->position.y, -200.0F,
+            "Yaw 0 places the camera behind anchor forward");
+        passed &= CheckNear(defaultPose->position.z, 60.0F,
+            "default Pan Up moves camera and framing center upward");
+    }
+
+    PresetTransform panRight{ { 35.0F, 0.0F }, { 0.0F, 0.0F, 200.0F } };
+    const auto rightPose = calculator.Evaluate(anchor, ToRig(panRight));
+    passed &= Check(rightPose.has_value(), "Pan Right produces a camera pose");
+    if (rightPose) {
+        const Vec3 cameraToAnchor{
+            -rightPose->position.x,
+            -rightPose->position.y,
+            -rightPose->position.z,
+        };
+        passed &= Check(rightPose->position.x > 0.0F,
+            "increasing Pan Right moves the camera to screen right");
+        passed &= CheckNear(Dot(cameraToAnchor, rightPose->basis.right), -35.0F,
+            "increasing Pan Right places the anchor left on screen");
+    }
+
+    PresetTransform panUp{ { 0.0F, 45.0F }, { 0.0F, 0.0F, 200.0F } };
+    const auto upPose = calculator.Evaluate(anchor, ToRig(panUp));
+    passed &= Check(upPose.has_value(), "Pan Up produces a camera pose");
+    if (upPose) {
+        const Vec3 cameraToAnchor{
+            -upPose->position.x,
+            -upPose->position.y,
+            -upPose->position.z,
+        };
+        passed &= Check(upPose->position.z > 0.0F,
+            "increasing Pan Up moves the camera upward");
+        passed &= CheckNear(Dot(cameraToAnchor, upPose->basis.up), -45.0F,
+            "increasing Pan Up places the anchor lower on screen");
+    }
+
+    PresetTransform positiveYaw{ {}, { 90.0F, 0.0F, 200.0F } };
+    const auto yawPose = calculator.Evaluate(anchor, ToRig(positiveYaw));
+    passed &= Check(yawPose.has_value(), "positive Yaw produces a camera pose");
+    if (yawPose) {
+        passed &= CheckNear(yawPose->position.x, 200.0F,
+            "positive Yaw orbits toward anchor right");
+        passed &= CheckNear(yawPose->position.y, 0.0F,
+            "90 degree Yaw completes a quarter orbit");
+    }
+
+    PresetTransform positivePitch{ {}, { 0.0F, 30.0F, 200.0F } };
+    const auto highPose = calculator.Evaluate(anchor, ToRig(positivePitch));
+    passed &= Check(highPose.has_value(), "positive Pitch produces a camera pose");
+    if (highPose) {
+        passed &= Check(highPose->position.z > anchor.position.z,
+            "positive Pitch places the camera above the framing center");
+    }
+    PresetTransform negativePitch{ {}, { 0.0F, -30.0F, 200.0F } };
+    const auto lowPose = calculator.Evaluate(anchor, ToRig(negativePitch));
+    passed &= Check(lowPose.has_value(), "negative Pitch produces a camera pose");
+    if (lowPose) {
+        passed &= Check(lowPose->position.z < anchor.position.z,
+            "negative Pitch places the camera below the framing center");
+    }
+
+    PresetTransform nearTransform{ {}, { 0.0F, 0.0F, 100.0F } };
+    PresetTransform farTransform{ {}, { 0.0F, 0.0F, 350.0F } };
+    const auto nearPose = calculator.Evaluate(anchor, ToRig(nearTransform));
+    const auto farPose = calculator.Evaluate(anchor, ToRig(farTransform));
+    passed &= Check(nearPose && farPose, "near and far Distance values produce camera poses");
+    if (nearPose && farPose) {
+        passed &= CheckNear(Distance(nearPose->position, anchor.position), 100.0F,
+            "smaller Distance moves toward the framing center");
+        passed &= CheckNear(Distance(farPose->position, anchor.position), 350.0F,
+            "larger Distance moves away from the framing center");
+    }
+
+    PresetTransform combined{ { 25.0F, 40.0F }, { 55.0F, 25.0F, 250.0F } };
+    const auto combinedPose = calculator.Evaluate(anchor, ToRig(combined));
+    passed &= Check(combinedPose.has_value(),
+        "Pan, Yaw, Pitch, and Distance combine into a camera pose");
+    if (combinedPose) {
+        const Vec3 cameraToAnchor{
+            -combinedPose->position.x,
+            -combinedPose->position.y,
+            -combinedPose->position.z,
+        };
+        passed &= CheckNear(Dot(cameraToAnchor, combinedPose->basis.right), -25.0F,
+            "Yaw and Pitch preserve Pan Right as a screen-space offset");
+        passed &= CheckNear(Dot(cameraToAnchor, combinedPose->basis.up), -40.0F,
+            "Yaw and Pitch preserve Pan Up as a screen-space offset");
+        passed &= CheckNear(Dot(cameraToAnchor, combinedPose->basis.viewForward), 250.0F,
+            "Pan values do not replace Distance with a forward control");
+    }
+
+    const PresetPreviewFeedback unavailable{};
+    passed &= Check(!ssc::ui::CanOpenPresetEditor(&unavailable, true),
+        "editor cannot open without a scene or applied preview");
+    const PresetPreviewFeedback emptyRecovery{
+        true, false, true, 0, std::nullopt, "Recovery preview available" };
+    passed &= Check(ssc::ui::CanOpenPresetEditor(&emptyRecovery, true),
+        "zero presets can open the editor when recovery preview is possible");
+    passed &= Check(!ssc::ui::CanOpenPresetEditor(&emptyRecovery, false),
+        "recovery-only access does not bypass a non-empty unavailable camera");
+    const PresetPreviewFeedback activePreview{
+        true, true, true, 7, defaults, "Preview active" };
+    passed &= Check(ssc::ui::CanEditPreset(&activePreview, true),
+        "editing is available while the scene preview session is open");
+    passed &= Check(!ssc::ui::CanEditPreset(&activePreview, false),
+        "editing stops when the preview session closes");
+    const PresetPreviewFeedback ownershipLost{
+        false, false, false, 0, defaults, "Camera ownership lost" };
+    passed &= Check(!ssc::ui::CanEditPreset(&ownershipLost, true),
+        "camera ownership loss immediately locks editing");
+    passed &= Check(!ssc::ui::CanOpenPresetEditor(&ownershipLost, true),
+        "an unavailable camera cannot open a recovery editor");
+
+    auto* previewService = ssc::runtime::PresetPreviewService::GetSingleton();
+    previewService->EndPreviewSession();
+    previewService->BeginPreviewSession();
+    const auto oldRevision = previewService->SetPreview(defaults);
+    const auto currentRevision = previewService->SetPreview(combined);
+    passed &= Check(currentRevision > oldRevision,
+        "each realtime edit receives a newer revision");
+    previewService->PublishFeedback({
+        true, true, true, oldRevision, defaults, "Old preview applied" });
+    auto feedback = previewService->Feedback();
+    passed &= Check(!ssc::ui::CanSavePreset(
+        true, true, feedback.get(), currentRevision),
+        "Save remains disabled while only an older edit is visible");
+    previewService->PublishFeedback({
+        true, true, true, currentRevision, combined, "Current preview applied" });
+    feedback = previewService->Feedback();
+    passed &= Check(ssc::ui::CanSavePreset(
+        true, true, feedback.get(), currentRevision),
+        "Save is enabled after the latest edit is visible");
+    passed &= Check(!ssc::ui::CanSavePreset(
+        true, false, feedback.get(), currentRevision),
+        "Save is disabled when there are no unsaved changes");
+    passed &= Check(!ssc::ui::CanSavePreset(
+        false, true, feedback.get(), currentRevision),
+        "Save is disabled without a draft");
+    previewService->EndPreviewSession();
+    previewService->ClearPreview();
+
+    const auto presetPath = TemporaryPresetPath();
+    std::error_code ignored;
+    static_cast<void>(std::filesystem::remove(presetPath, ignored));
+    ssc::runtime::PresetRepository repository;
+    passed &= Check(repository.LoadFromFile(presetPath).succeeded,
+        "a missing preset file starts as an empty repository");
+    passed &= Check(repository.Create({ "only", defaults }).succeeded,
+        "a preset can be created from the empty state");
+    passed &= Check(repository.Delete("only").succeeded && repository.Snapshot()->empty(),
+        "deleting the final preset leaves a valid zero-preset state");
+    passed &= Check(repository.Create({ "recovered", combined }).succeeded,
+        "New preset recovers after every preset was deleted");
+    passed &= Check(repository.Snapshot()->size() == 1 &&
+        repository.Snapshot()->front().id == "recovered",
+        "the recovered preset becomes the saved selection source");
+    static_cast<void>(std::filesystem::remove(presetPath, ignored));
+
+    if (!passed) {
+        return 1;
+    }
+    std::cout << "Preset settings specification tests passed\n";
+    return 0;
+}

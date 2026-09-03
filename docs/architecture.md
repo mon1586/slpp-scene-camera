@@ -2,18 +2,21 @@
 
 ## 全体構成
 
-コードは `src`、`runtime`、`core` の3つに分ける。
+コードは手続き層の`src`直下、外部接続の`runtime`、計算の`core`、表示adapterの`ui`に分ける。
 
 依存方向は次の2本だけとする。
 
 ```text
 src -> runtime
 src -> core
+ui -> runtime
 ```
 
 `runtime` と `core` は互いに依存しない。`runtime` と `core` から `src` にも依存しない。
 
 `src` は手続きを進める層である。`runtime` との間で開始、更新、終了などの通知と入出力をやり取りし、その過程で必要な機能を `core` から呼び出す。
+
+`ui`はscene、actor、anchorを参照しない。プリセットの編集中transformとrevisionだけをruntimeのpreview channelへ送り、適用済みrevisionと利用可否を受け取る。sceneとanchorの選択、camera所有権、world poseは`src`と`runtime`だけが扱う。
 
 エントリーポイントは依存を組み立てるbootstrap境界に限定する。外部イベントの解釈やライフサイクル処理は`runtime`へ委譲し、手続き上の判断は持たない。
 
@@ -38,6 +41,15 @@ src -> core
 - 処理の順序や機能上の判断は持たない。
 
 外部イベントと入出力の具体的な契約は[`runtime-spec.md`](runtime-spec.md)に記載する。
+
+### ui
+
+- SKSE Menu Frameworkへの登録と表示を担当する。
+- 保存済み値、編集中値、未保存状態、確認dialogを扱う。
+- previewにはtransformとrevisionだけを渡す。
+- 最新revisionの適用確認を受けるまで保存を許可しない。
+- scene ID、参加actor、anchor、camera poseを保持しない。
+- ゲーム全体のpause状態を直接変更しない。
 
 ### core
 

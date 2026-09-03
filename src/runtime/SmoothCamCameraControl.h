@@ -17,6 +17,7 @@ namespace ssc::runtime
         void SetInterface(void* a_interface, SmoothCamAPI::InterfaceVersion a_version);
 
         [[nodiscard]] bool CanAcquire() const noexcept override;
+        [[nodiscard]] std::string_view UnavailableReason() const noexcept override;
         [[nodiscard]] bool Acquire() override;
         [[nodiscard]] bool StillOwnsCamera() const noexcept override;
         [[nodiscard]] bool OwnsCamera() const noexcept override;
@@ -25,8 +26,11 @@ namespace ssc::runtime
         [[nodiscard]] bool EmergencyRelease() noexcept override;
 
     private:
+        [[nodiscard]] static bool IsImprovedCameraLoaded() noexcept;
+
         std::atomic<SmoothCamAPI::IVSmoothCam2*> api_{ nullptr };
         std::atomic_bool ownsCamera_{ false };
+        std::atomic_bool improvedCameraDetected_{ false };
         CameraOutput output_;
     };
 }
