@@ -27,7 +27,7 @@ namespace ssc::runtime
     struct SceneAnchorSamples
     {
         std::span<const Vec3> participantPelvisPositions;
-        std::optional<Vec3> playerPelvisPosition;
-        std::optional<Vec3> playerForward;
+        std::optional<Vec3> playerPelvisForward;
+        std::optional<Vec3> playerActorForward;
     };
 }

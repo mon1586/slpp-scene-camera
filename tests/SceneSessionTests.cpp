@@ -149,40 +149,46 @@ int main()
     const std::array<Vec3, 2> twoParticipants{{ { 0.0F, 0.0F, 10.0F }, { 10.0F, 0.0F, 20.0F } }};
     const auto twoPersonAnchor = anchorCalculator.Evaluate({
         twoParticipants,
-        Vec3{ 0.0F, 0.0F, 10.0F },
         Vec3{ 0.0F, 1.0F, 0.0F },
+        Vec3{ 1.0F, 0.0F, 0.0F },
     });
     passed &= Check(twoPersonAnchor.has_value(), "two participants produce an anchor");
     if (twoPersonAnchor) {
         passed &= CheckNear(twoPersonAnchor->position.x, 5.0F, "anchor averages Pelvis X");
         passed &= CheckNear(twoPersonAnchor->position.y, 0.0F, "anchor averages Pelvis Y");
         passed &= CheckNear(twoPersonAnchor->position.z, 15.0F, "anchor averages Pelvis Z");
-        passed &= CheckNear(twoPersonAnchor->forward.x, -1.0F, "multi-person forward points from anchor to player");
-        passed &= CheckNear(twoPersonAnchor->forward.y, 0.0F, "multi-person forward is horizontal");
+        passed &= CheckNear(twoPersonAnchor->forward.x, 0.0F,
+            "multi-person forward ignores the player's position around the anchor");
+        passed &= CheckNear(twoPersonAnchor->forward.y, -1.0F,
+            "multi-person forward reverses the player Pelvis forward");
     }
 
     const std::array<Vec3, 1> oneParticipant{{ { 4.0F, 5.0F, 6.0F } }};
     const auto onePersonAnchor = anchorCalculator.Evaluate({
         oneParticipant,
-        oneParticipant.front(),
-        Vec3{ 0.0F, 3.0F, 7.0F },
+        Vec3{ 4.0F, 0.0F, 7.0F },
+        Vec3{ 0.0F, 1.0F, 0.0F },
     });
-    passed &= Check(onePersonAnchor.has_value(), "one participant uses player-forward fallback");
+    passed &= Check(onePersonAnchor.has_value(), "one participant uses Pelvis forward");
     if (onePersonAnchor) {
-        passed &= CheckNear(onePersonAnchor->forward.x, 0.0F, "one-person fallback removes X drift");
-        passed &= CheckNear(onePersonAnchor->forward.y, -1.0F, "one-person fallback reverses player forward");
-        passed &= CheckNear(onePersonAnchor->forward.z, 0.0F, "one-person fallback removes vertical forward");
+        passed &= CheckNear(onePersonAnchor->forward.x, -1.0F,
+            "one-person forward reverses Pelvis forward");
+        passed &= CheckNear(onePersonAnchor->forward.y, 0.0F,
+            "one-person forward does not use actor yaw when Pelvis forward is valid");
+        passed &= CheckNear(onePersonAnchor->forward.z, 0.0F,
+            "one-person forward removes vertical Pelvis tilt");
     }
 
     const std::array<Vec3, 2> degenerateParticipants{{ { 3.0F, 4.0F, 1.0F }, { 3.0F, 4.0F, 9.0F } }};
     const auto degenerateAnchor = anchorCalculator.Evaluate({
         degenerateParticipants,
-        Vec3{ 3.0F, 4.0F, 2.0F },
+        Vec3{ 0.0F, 0.0F, 1.0F },
         Vec3{ 1.0F, 0.0F, 0.0F },
     });
-    passed &= Check(degenerateAnchor.has_value(), "degenerate multi-person layout uses fallback");
+    passed &= Check(degenerateAnchor.has_value(), "vertical Pelvis forward uses actor fallback");
     if (degenerateAnchor) {
-        passed &= CheckNear(degenerateAnchor->forward.x, -1.0F, "degenerate fallback reverses player forward");
+        passed &= CheckNear(degenerateAnchor->forward.x, -1.0F,
+            "actor fallback is reversed for anchor forward");
     }
 
     const auto maximum = std::numeric_limits<float>::max();
@@ -192,8 +198,8 @@ int main()
     }};
     const auto extremeAnchor = anchorCalculator.Evaluate({
         extremeParticipants,
-        extremeParticipants.front(),
         Vec3{ 0.0F, 1.0F, 0.0F },
+        std::nullopt,
     });
     passed &= Check(extremeAnchor.has_value(), "finite extreme coordinates do not overflow the average");
     if (extremeAnchor) {

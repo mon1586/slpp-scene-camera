@@ -1,6 +1,6 @@
 # シーンアンカー
 
-状態: **初期計算とシーン開始・変更・終了境界を実装済み**
+状態: **Pelvis向き基準を実装・Core自動テスト済み／実機方向確認待ち**
 
 ## 定義
 
@@ -10,10 +10,11 @@
 
 - 現在のシーンを代表する位置と向きを持つ。
 - カメラプリセットの相対座標系として使える。
+- プレイヤーの正面側と背面側を区別できる。
 - カメラ候補位置への raycast 起点として有効である。
 - 固定され，揺れない。
 
-## 初期計算案
+## 計算仕様
 
 参加者それぞれの Pelvis node のワールド位置を取得し、その算術平均をアンカー位置とする。
 
@@ -21,17 +22,18 @@
 anchorPosition = average(participantPelvisPositions)
 ```
 
-複数参加者の場合、アンカー位置からプレイヤーの Pelvis へ向かうベクトルを水平面へ射影し、アンカーの向きとする。
+アンカーの向きは参加者の配置ではなく、プレイヤーの`NPC Pelvis [Pelv]` nodeが示すbody forwardを基準にする。Pelvisのworld回転から得た前方を水平面へ射影し、その逆向きをアンカーのforwardとする。
 
 ```text
-direction = playerPelvisPosition - anchorPosition
-direction.z = 0
-anchorDirection = normalize(direction)
+playerPelvisForward = horizontalForward(playerPelvisWorldRotation)
+anchorForward = -normalize(playerPelvisForward)
 ```
 
-プレイヤーを含む全参加者の配置から向きを決めるため、複数参加者の場合にプレイヤー自身の向きの逆をそのまま使う方式は採用しない。
+この向きは参加人数や、アンカー位置に対してプレイヤーがどちら側にいるかに依存しない。プレイヤーが他の参加者へ正面を向けている場合と背中を向けている場合でanchor forwardが反転するため、同じorbit yawでプレイヤーの表裏を一貫して表せる。
 
-参加者が一人の場合はアンカー位置とプレイヤーの Pelvis が一致して方向を作れないため、プレイヤーの水平な向きの逆をアンカーの向きとする。多人数でも水平ベクトルの長さがほぼゼロになる配置では、同じ扱いを候補とする。
+Pelvisの前方を水平面へ射影できない場合は、Actor yawから得た水平前方の逆をフォールバックとして使う。Pelvis node自体を取得できない場合、またはフォールバックも正規化できない場合はアンカーを生成しない。
+
+現在のcamera orbit規約ではYaw `0`のcameraをanchor forwardの反対側へ置く。このため、このanchor定義ではYaw `0`がプレイヤー正面側、Yaw `±180`がプレイヤー背面側になる。
 
 この計算結果が static collision 内にある場合の補正またはフォールバックは、別途検討する。
 

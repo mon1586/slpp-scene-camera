@@ -266,16 +266,16 @@ namespace ssc
         for (std::size_t index = 0; index < samples->participantPelvisPositions.size(); ++index) {
             corePelvisPositions[index] = ToCore(samples->participantPelvisPositions[index]);
         }
-        const auto playerPelvis = samples->playerPelvisPosition ?
-            std::optional{ ToCore(*samples->playerPelvisPosition) } : std::nullopt;
-        const auto playerForward = samples->playerForward ?
-            std::optional{ ToCore(*samples->playerForward) } : std::nullopt;
+        const auto playerPelvisForward = samples->playerPelvisForward ?
+            std::optional{ ToCore(*samples->playerPelvisForward) } : std::nullopt;
+        const auto playerActorForward = samples->playerActorForward ?
+            std::optional{ ToCore(*samples->playerActorForward) } : std::nullopt;
 
         anchor_ = anchorCalculator_.Evaluate({
             std::span<const core::Vec3>{
                 corePelvisPositions.data(), samples->participantPelvisPositions.size() },
-            playerPelvis,
-            playerForward,
+            playerPelvisForward,
+            playerActorForward,
         });
         if (!anchor_) {
             Restore("could not derive a stable scene anchor"sv);

@@ -2,7 +2,7 @@
 
 Native SKSE scene-camera plugin for SexLab P+ and SmoothCam.
 
-When a player-involved SexLab P+ scene reaches `AnimationStart`, the plugin captures a fixed scene anchor from the participants' Pelvis nodes after the camera update boundary. Its position is the Pelvis average; with multiple participants its forward points from that average toward the player Pelvis, and otherwise it falls back to the inverse of the player's horizontal forward. The first valid preset defines screen-relative `Pan Right`/`Pan Up` framing plus a `yaw`/`pitch`/`distance` orbit, and a matching `AnimationChange` reapplies it after recapturing the anchor. Presets can be created, edited, deleted, and reloaded through an SKSE Menu Framework window; changing any framing or orbit value requests a live camera preview without saving. Collision, LOS, and clearance selection are not implemented yet.
+When a player-involved SexLab P+ scene reaches `AnimationStart`, the plugin captures a fixed scene anchor from the participants' Pelvis nodes after the camera update boundary. Its position is the Pelvis average, and its forward is the inverse of the player Pelvis node's horizontal world forward, with actor yaw used only as a degenerate-axis fallback. This makes preset yaw `0` the player's front side and yaw `±180` the back side. The first valid preset defines screen-relative `Pan Right`/`Pan Up` framing plus a `yaw`/`pitch`/`distance` orbit, and a matching `AnimationChange` reapplies it after recapturing the anchor. Presets can be created, edited, deleted, and reloaded through an SKSE Menu Framework window; changing any framing or orbit value requests a live camera preview without saving. Collision, LOS, and clearance selection are not implemented yet.
 
 The POC has no ESP and no dedicated Papyrus script. SexLab P+ integration uses the native SKSE `ModCallbackEvent` dispatcher. P+ currently emits unprefixed `AnimationStart`/`AnimationChange`/`AnimationEnd` compatibility events alongside its documented Papyrus hook API. Because P+ passes `thread_id` as the second `SendModEvent` argument, the native adapter parses it from `strArg` and treats `numArg` only as a compatibility fallback. Generic event names are accepted only when the sender is a quest defined by `SexLab.esm`.
 
@@ -38,7 +38,7 @@ Install the contents of `dist` under `Data`. This includes the DLL and the initi
 
 1. Start the game with SexLab P+, SmoothCam, SKSE Menu Framework 3.4+, and this mod enabled.
 2. Start a SexLab scene containing the player.
-3. Confirm the initial preset moves the camera and `SexlabSceneCamera.log` records the anchor and applied pose.
+3. In a debug-anchor build, confirm the arrow points opposite the player Pelvis front for both front-facing and back-facing animation poses. Confirm `SexlabSceneCamera.log` records the Pelvis and actor direction samples, anchor, and applied pose.
 4. Open Mod Control Panel, choose Sexlab Scene Camera > Camera Presets, and open the preset editor.
 5. Drag `Pan Right`, `Pan Up`, then orbit `yaw`, `pitch`, and `distance`; confirm the scene camera follows while the blocking editor owns input and pauses game time.
 6. Exercise create, update, cancel, delete, and reload, including the unsaved-change and delete confirmations.

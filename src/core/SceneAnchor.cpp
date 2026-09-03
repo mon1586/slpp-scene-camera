@@ -29,9 +29,7 @@ namespace ssc::core
     std::optional<SceneAnchor> SceneAnchorCalculator::Evaluate(
         const SceneAnchorInput& a_input) const noexcept
     {
-        if (a_input.participantPelvisPositions.empty() ||
-            !a_input.playerPelvisPosition ||
-            !IsFinite(*a_input.playerPelvisPosition)) {
+        if (a_input.participantPelvisPositions.empty()) {
             return std::nullopt;
         }
 
@@ -58,27 +56,21 @@ namespace ssc::core
             return std::nullopt;
         }
 
-        if (a_input.participantPelvisPositions.size() > 1) {
-            if (const auto forward = NormalizeHorizontal({
-                    a_input.playerPelvisPosition->x - position.x,
-                    a_input.playerPelvisPosition->y - position.y,
-                    0.0F });
-                forward) {
-                return SceneAnchor{ position, *forward };
-            }
+        std::optional<Vec3> playerForward;
+        if (a_input.playerPelvisForward && IsFinite(*a_input.playerPelvisForward)) {
+            playerForward = NormalizeHorizontal(*a_input.playerPelvisForward);
         }
-
-        if (!a_input.playerForward || !IsFinite(*a_input.playerForward)) {
-            return std::nullopt;
+        if (!playerForward && a_input.playerActorForward &&
+            IsFinite(*a_input.playerActorForward)) {
+            playerForward = NormalizeHorizontal(*a_input.playerActorForward);
         }
-        const auto fallbackForward = NormalizeHorizontal({
-            -a_input.playerForward->x,
-            -a_input.playerForward->y,
-            0.0F });
-        if (!fallbackForward) {
+        if (!playerForward) {
             return std::nullopt;
         }
 
-        return SceneAnchor{ position, *fallbackForward };
+        return SceneAnchor{
+            position,
+            { -playerForward->x, -playerForward->y, 0.0F },
+        };
     }
 }

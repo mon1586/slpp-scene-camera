@@ -58,7 +58,7 @@ SexLab P+ のプレイヤー参加シーンで SmoothCam から独自カメラ�
 
 ## 2. カメラ機能の検討
 
-状態: **アンカー実装・実機確認済み／次はraycast・clearance診断**
+状態: **Pelvis向き基準を実装・Core自動テスト済み／実機方向確認待ち**
 
 処理順序とRuntime/Coreの呼び分けは [`scene-camera-procedure.md`](scene-camera-procedure.md) に分離する。
 
@@ -79,6 +79,7 @@ SexLab P+ のプレイヤー参加シーンで SmoothCam から独自カメラ�
 - 最小のschema versionを持つ保存形式を決め、同梱した固定プリセットをread-onlyで読み込む。
 - プリセットはID、画面相対のframing right・up、yaw・pitch・distanceを持つ。
 - アンカーのforward、right、upからframing centerとorbitをworld poseへ変換する。
+- アンカーforwardはプレイヤーPelvisのbody forwardと反対向きにし、Yaw `0`をプレイヤー正面側、Yaw `±180`を背面側として扱う。
 - parserで数値の有限性、値域、必須項目、重複ID、未知version、壊れたファイルを検証する。
 - clearanceとLOSは判定せず、読み込みに成功したプリセットをすべてvalidとして扱う。
 - 先頭プリセットのpose確定後にSmoothCamのカメラ制御を取得し、固定poseを反映する。

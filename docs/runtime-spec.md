@@ -40,7 +40,7 @@ Runtime通知は、送信元QuestのForm IDとP+ thread IDを組み合わせたs
 - 最大32人とし、超過時もプレイヤーを優先して保持する。
 - 収集とActorHandle化はゲームスレッドで行う。
 
-`src`からアンカー入力を要求された場合、snapshot内の各Actorから`NPC Pelvis [Pelv]`のworld位置を取得する。あわせてプレイヤーのPelvis位置と水平向きの計算に使うActor yawを返す。必要なActor、3D、Pelvis node、プレイヤーのいずれかを取得できない場合は入力を返さない。
+`src`からアンカー入力を要求された場合、snapshot内の各Actorから`NPC Pelvis [Pelv]`のworld位置を取得する。プレイヤーについては同じPelvis nodeのworld回転からbody forwardも取得し、Actor yawから得た水平前方とともに返す。どちらを採用するかはCoreが決める。必要なActor、3D、Pelvis node、プレイヤーのいずれかを取得できない場合は入力を返さない。
 
 アニメーション変更時は参加者snapshotを作り直さず、開始時に保持したsnapshotを使う。参加者構成の変更は現在の対象外とする。
 

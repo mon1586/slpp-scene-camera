@@ -187,7 +187,7 @@ namespace ssc::runtime
             return std::nullopt;
         }
 
-        std::optional<Vec3> playerPelvis;
+        std::optional<Vec3> playerPelvisForward;
         for (std::size_t index = 0; index < a_participants.count_; ++index) {
             const auto actor = a_participants.storage_->handles[index].get();
             auto* root = actor ? actor->Get3D() : nullptr;
@@ -200,18 +200,27 @@ namespace ssc::runtime
             const auto pelvisPosition = ToRuntime(pelvis->world.translate);
             a_pelvisStorage[index] = pelvisPosition;
             if (actor.get() == player) {
-                playerPelvis = pelvisPosition;
+                playerPelvisForward = ToRuntime(pelvis->world.rotate.GetVectorY());
             }
         }
 
-        if (!playerPelvis) {
+        if (!playerPelvisForward) {
             return std::nullopt;
         }
 
+        const auto playerActorForward = ForwardFromYaw(player->GetAngleZ());
+        logger::debug(
+            "Player direction samples: Pelvis forward ({:.3f}, {:.3f}, {:.3f}), actor forward ({:.3f}, {:.3f}, {:.3f})",
+            playerPelvisForward->x,
+            playerPelvisForward->y,
+            playerPelvisForward->z,
+            playerActorForward.x,
+            playerActorForward.y,
+            playerActorForward.z);
         return SceneAnchorSamples{
             std::span<const Vec3>{ a_pelvisStorage.data(), a_participants.count_ },
-            playerPelvis,
-            ForwardFromYaw(player->GetAngleZ()),
+            playerPelvisForward,
+            playerActorForward,
         };
     }
 
