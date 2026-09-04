@@ -6,6 +6,8 @@ namespace ssc::runtime
     namespace
     {
         const RE::BSFixedString kPelvisNodeName{ "NPC Pelvis [Pelv]" };
+        const RE::BSFixedString kChestNodeName{ "NPC Spine2 [Spn2]" };
+        const RE::BSFixedString kFaceNodeName{ "NPC Head [Head]" };
 
         [[nodiscard]] Vec3 ToRuntime(const RE::NiPoint3& a_point) noexcept
         {
@@ -221,6 +223,64 @@ namespace ssc::runtime
             std::span<const Vec3>{ a_pelvisStorage.data(), a_participants.count_ },
             playerPelvisForward,
             playerActorForward,
+        };
+    }
+
+    std::optional<SceneVisibilitySamples> SexLabPSceneSource::CollectVisibilityInput(
+        const SceneParticipantSnapshot& a_participants,
+        std::span<std::uint32_t> a_participantIDStorage,
+        std::span<VisibilityTarget> a_targetStorage) const
+    {
+        const auto targetCount = a_participants.count_ *
+            SceneVisibilitySamples::kPointsPerParticipant;
+        if (!a_participants.storage_ ||
+            a_participants.count_ == 0 ||
+            a_participants.count_ > a_participantIDStorage.size() ||
+            targetCount > a_targetStorage.size()) {
+            return std::nullopt;
+        }
+
+        constexpr std::array pointKinds{
+            core::VisibilityPoint::kFace,
+            core::VisibilityPoint::kChest,
+            core::VisibilityPoint::kWaist,
+        };
+        const std::array nodeNames{
+            std::addressof(kFaceNodeName),
+            std::addressof(kChestNodeName),
+            std::addressof(kPelvisNodeName),
+        };
+
+        for (std::size_t participantIndex = 0;
+             participantIndex < a_participants.count_;
+             ++participantIndex) {
+            const auto actor = a_participants.storage_->handles[participantIndex].get();
+            auto* root = actor ? actor->Get3D() : nullptr;
+            const auto actorID = actor ? actor->GetFormID() : 0;
+            a_participantIDStorage[participantIndex] = actorID;
+
+            for (std::size_t pointIndex = 0; pointIndex < pointKinds.size(); ++pointIndex) {
+                const auto targetIndex =
+                    participantIndex * pointKinds.size() + pointIndex;
+                auto& target = a_targetStorage[targetIndex];
+                target = { participantIndex, actorID, pointKinds[pointIndex], std::nullopt };
+
+                auto* node = root ? root->GetObjectByName(*nodeNames[pointIndex]) : nullptr;
+                if (node) {
+                    target.position = ToRuntime(node->world.translate);
+                } else {
+                    logger::debug(
+                        "Visibility point '{}' is unavailable for participant {:08X}",
+                        core::VisibilityPointName(pointKinds[pointIndex]),
+                        actorID);
+                }
+            }
+        }
+
+        return SceneVisibilitySamples{
+            std::span<const std::uint32_t>{
+                a_participantIDStorage.data(), a_participants.count_ },
+            std::span<const VisibilityTarget>{ a_targetStorage.data(), targetCount },
         };
     }
 

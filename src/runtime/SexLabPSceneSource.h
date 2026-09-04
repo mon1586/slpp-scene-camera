@@ -17,6 +17,10 @@ namespace ssc::runtime
         [[nodiscard]] std::optional<SceneAnchorSamples> CollectAnchorInput(
             const SceneParticipantSnapshot& a_participants,
             std::span<Vec3> a_pelvisStorage) const override;
+        [[nodiscard]] std::optional<SceneVisibilitySamples> CollectVisibilityInput(
+            const SceneParticipantSnapshot& a_participants,
+            std::span<std::uint32_t> a_participantIDStorage,
+            std::span<VisibilityTarget> a_targetStorage) const override;
 
         RE::BSEventNotifyControl ProcessEvent(
             const SKSE::ModCallbackEvent* a_event,

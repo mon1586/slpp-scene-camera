@@ -4,6 +4,7 @@
 
 #include "runtime/PresetPreviewService.h"
 #include "runtime/PresetRepository.h"
+#include "runtime/WorldDebugVisualization.h"
 
 #include <SKSEMenuFramework.h>
 
@@ -76,11 +77,12 @@ namespace ssc::ui
                 return;
             }
             state.draftRevision = runtime::PresetPreviewService::GetSingleton()->SetPreview(
-                state.draftTransform);
+                state.draftTransform,
+                DraftID());
             state.message = "Preview pending";
         }
 
-        void SelectPreset(const runtime::CameraPreset& a_preset)
+        void SelectPreset(const runtime::CameraPreset& a_preset, bool a_publishPreview)
         {
             state.selectedID = a_preset.id;
             SetIDBuffer(a_preset.id);
@@ -89,14 +91,16 @@ namespace ssc::ui
             state.creating = false;
             state.dirty = false;
             state.message.clear();
-            PublishDraft();
+            if (a_publishPreview) {
+                PublishDraft();
+            }
         }
 
-        void SelectFirstPreset()
+        void SelectFirstPreset(bool a_publishPreview = true)
         {
             const auto snapshot = runtime::PresetRepository::GetSingleton()->Snapshot();
             if (snapshot && !snapshot->empty()) {
-                SelectPreset(snapshot->front());
+                SelectPreset(snapshot->front(), a_publishPreview);
                 return;
             }
             state.selectedID.clear();
@@ -117,7 +121,7 @@ namespace ssc::ui
                     a_id,
                     &runtime::CameraPreset::id);
                 if (iterator != snapshot->end()) {
-                    SelectPreset(*iterator);
+                    SelectPreset(*iterator, true);
                     return;
                 }
             }
@@ -348,23 +352,27 @@ namespace ssc::ui
             const auto feedback = previewService->Feedback();
             const auto snapshot = runtime::PresetRepository::GetSingleton()->Snapshot();
             const auto noPresets = !snapshot || snapshot->empty();
-            const auto canRecoverEmpty = noPresets && feedback && feedback->sceneActive &&
-                feedback->previewPossible && !feedback->previewApplied;
-            if (!CanOpenPresetEditor(feedback.get(), noPresets)) {
+            if (!CanStartPresetPreview(feedback.get())) {
                 return;
             }
 
             previewService->BeginPreviewSession();
-            if (canRecoverEmpty) {
+            if (noPresets) {
                 if (state.creating) {
                     PublishDraft();
                 } else {
                     BeginNew();
                 }
-            } else if (state.selectedID.empty() && !state.creating) {
-                SelectFirstPreset();
             } else {
-                PublishDraft();
+                const auto selected = std::ranges::find(
+                    *snapshot,
+                    state.selectedID,
+                    &runtime::CameraPreset::id);
+                if (selected == snapshot->end()) {
+                    SelectFirstPreset();
+                } else {
+                    SelectPreset(*selected, true);
+                }
             }
             state.window->IsOpen.store(true, std::memory_order_release);
             if (state.mainWindow) {
@@ -377,23 +385,109 @@ namespace ssc::ui
         {
             try {
                 ImGuiMCP::TextWrapped(
-                    "Create and edit scene-relative camera presets. Clearance is not evaluated yet.");
+                    "Stored presets and their visibility in the current scene. Selecting a row does not move the camera.");
                 const auto feedback = runtime::PresetPreviewService::GetSingleton()->Feedback();
                 const auto snapshot = runtime::PresetRepository::GetSingleton()->Snapshot();
                 const auto noPresets = !snapshot || snapshot->empty();
-                const auto canOpen = CanOpenPresetEditor(feedback.get(), noPresets);
-                ImGuiMCP::BeginDisabled(!canOpen);
-                if (ImGuiMCP::Button("Open preset editor")) {
+
+                if (feedback) {
+                    ImGuiMCP::Text("Camera: %s", feedback->message.c_str());
+                }
+                const auto* evaluation = feedback && feedback->visibilityEvaluation ?
+                    feedback->visibilityEvaluation.get() : nullptr;
+                const auto presetCount = snapshot ? snapshot->size() : 0;
+                const auto usableCount = CountUsablePresets(evaluation);
+                if (feedback && feedback->sceneActive) {
+                    ImGuiMCP::Text("Usable presets: %zu / %zu", usableCount, presetCount);
+                } else {
+                    ImGuiMCP::TextDisabled("Current scene: not evaluated");
+                }
+
+                if (snapshot && !snapshot->empty()) {
+                    const auto selectedStillExists = std::ranges::any_of(
+                        *snapshot,
+                        [](const auto& a_preset) { return a_preset.id == state.selectedID; });
+                    if (!selectedStillExists) {
+                        auto usablePreset = snapshot->end();
+                        if (evaluation) {
+                            const auto usableCandidate = std::ranges::find_if(
+                                evaluation->candidates,
+                                [](const auto& a_candidate) { return a_candidate.usable; });
+                            if (usableCandidate != evaluation->candidates.end()) {
+                                usablePreset = std::ranges::find(
+                                    *snapshot,
+                                    usableCandidate->presetID,
+                                    &runtime::CameraPreset::id);
+                            }
+                        }
+                        if (usablePreset != snapshot->end()) {
+                            SelectPreset(*usablePreset, false);
+                        } else {
+                            SelectFirstPreset(false);
+                        }
+                    }
+                    ImGuiMCP::Separator();
+                    for (const auto& preset : *snapshot) {
+                        const auto summary = SummarizePresetForScene(evaluation, preset.id);
+                        ImGuiMCP::ImVec4 color{ 0.68F, 0.68F, 0.68F, 1.0F };
+                        std::string status = "[--] not evaluated";
+                        if (summary.status == PresetSceneStatus::kUsable) {
+                            color = { 0.30F, 0.90F, 0.38F, 1.0F };
+                            status = fmt::format(
+                                "[OK] {}/{} participants, {}/{} points",
+                                summary.visibleParticipants,
+                                summary.totalParticipants,
+                                summary.visiblePoints,
+                                summary.availablePoints);
+                        } else if (summary.status == PresetSceneStatus::kBlocked) {
+                            color = { 0.95F, 0.32F, 0.30F, 1.0F };
+                            status = fmt::format(
+                                "[BLOCKED] {}/{} participants, {}/{} points: {}",
+                                summary.visibleParticipants,
+                                summary.totalParticipants,
+                                summary.visiblePoints,
+                                summary.availablePoints,
+                                core::CandidateFailureReasonName(summary.failureReason));
+                        }
+                        const auto label = fmt::format(
+                            "{} - {}##dashboard-{}",
+                            preset.id,
+                            status,
+                            preset.id);
+                        ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, color);
+                        const auto selected = preset.id == state.selectedID;
+                        if (ImGuiMCP::Selectable(label.c_str(), selected) && !selected) {
+                            SelectPreset(preset, false);
+                        }
+                        ImGuiMCP::PopStyleColor();
+                    }
+                } else {
+                    ImGuiMCP::Separator();
+                    ImGuiMCP::TextDisabled("No camera presets have been created.");
+                }
+
+                ImGuiMCP::Separator();
+                const auto canPreview = CanStartPresetPreview(feedback.get());
+                ImGuiMCP::BeginDisabled(!canPreview);
+                if (ImGuiMCP::Button(
+                        noPresets ? "Create & preview preset" : "Preview & edit selected")) {
                     OpenEditor();
                 }
                 ImGuiMCP::EndDisabled();
-                if (feedback) {
-                    ImGuiMCP::TextDisabled("Camera: %s", feedback->message.c_str());
+                if (!canPreview) {
+                    ImGuiMCP::TextDisabled("Preview unavailable: %s",
+                        feedback ? feedback->message.c_str() : "camera state unavailable");
                 }
-                if (!canOpen) {
-                    ImGuiMCP::TextDisabled(
-                        "The editor requires an active scene camera with preview control.");
+#if defined(SSC_ENABLE_VISIBILITY_DEBUG)
+                ImGuiMCP::Separator();
+                auto* debug = runtime::WorldDebugVisualization::GetSingleton();
+                const auto label = debug->SelectedCandidateLabel();
+                ImGuiMCP::Text("Visibility debug: %s", label.c_str());
+                auto showOccludedSegments = debug->OccludedSegmentsVisible();
+                if (ImGuiMCP::Checkbox("Show occluded segments", &showOccludedSegments)) {
+                    debug->SetOccludedSegmentsVisible(showOccludedSegments);
                 }
+#endif
             } catch (...) {
                 logger::error("SKSE Menu Framework preset page failed");
             }
@@ -493,6 +587,29 @@ namespace ssc::ui
                 ImGuiMCP::Text("State: %s", state.dirty ? "unsaved" : "saved");
                 if (feedback) {
                     ImGuiMCP::TextDisabled("Camera: %s", feedback->message.c_str());
+                }
+                if (feedback && feedback->appliedRevision == state.draftRevision &&
+                    feedback->visibilityEvaluation &&
+                    !feedback->visibilityEvaluation->candidates.empty()) {
+                    const auto& candidate = feedback->visibilityEvaluation->candidates.front();
+                    if (candidate.usable) {
+                        ImGuiMCP::TextColored(
+                            { 0.30F, 0.90F, 0.38F, 1.0F },
+                            "Visibility: usable (%zu/%zu participants, %zu/%zu points)",
+                            candidate.visibleParticipantCount,
+                            candidate.participants.size(),
+                            candidate.visiblePointCount,
+                            candidate.availablePointCount);
+                    } else {
+                        ImGuiMCP::TextColored(
+                            { 0.95F, 0.32F, 0.30F, 1.0F },
+                            "Visibility: blocked (%zu/%zu participants, %zu/%zu points: %s)",
+                            candidate.visibleParticipantCount,
+                            candidate.participants.size(),
+                            candidate.visiblePointCount,
+                            candidate.availablePointCount,
+                            core::CandidateFailureReasonName(candidate.failureReason).data());
+                    }
                 }
                 if (!state.message.empty()) {
                     ImGuiMCP::TextWrapped("%s", state.message.c_str());

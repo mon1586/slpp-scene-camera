@@ -4,6 +4,8 @@
 #include <optional>
 #include <span>
 
+#include "core/VisibilityEvaluation.h"
+
 namespace ssc::runtime
 {
     struct Vec3
@@ -29,5 +31,21 @@ namespace ssc::runtime
         std::span<const Vec3> participantPelvisPositions;
         std::optional<Vec3> playerPelvisForward;
         std::optional<Vec3> playerActorForward;
+    };
+
+    struct VisibilityTarget
+    {
+        std::size_t participantIndex{ 0 };
+        std::uint32_t participantID{ 0 };
+        core::VisibilityPoint point{ core::VisibilityPoint::kFace };
+        std::optional<Vec3> position;
+    };
+
+    struct SceneVisibilitySamples
+    {
+        static constexpr std::size_t kPointsPerParticipant = 3;
+
+        std::span<const std::uint32_t> participantIDs;
+        std::span<const VisibilityTarget> targets;
     };
 }

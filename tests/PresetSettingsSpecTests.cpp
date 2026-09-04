@@ -200,16 +200,16 @@ int main()
     }
 
     const PresetPreviewFeedback unavailable{};
-    passed &= Check(!ssc::ui::CanOpenPresetEditor(&unavailable, true),
-        "editor cannot open without a scene or applied preview");
+    passed &= Check(!ssc::ui::CanStartPresetPreview(&unavailable),
+        "dashboard cannot start preview without an active scene");
     const PresetPreviewFeedback emptyRecovery{
         true, false, true, 0, std::nullopt, "Recovery preview available" };
-    passed &= Check(ssc::ui::CanOpenPresetEditor(&emptyRecovery, true),
-        "zero presets can open the editor when recovery preview is possible");
-    passed &= Check(!ssc::ui::CanOpenPresetEditor(&emptyRecovery, false),
-        "recovery-only access does not bypass a non-empty unavailable camera");
+    passed &= Check(ssc::ui::CanStartPresetPreview(&emptyRecovery),
+        "dashboard can start a preview when camera acquisition is possible");
     const PresetPreviewFeedback activePreview{
         true, true, true, 7, defaults, "Preview active" };
+    passed &= Check(ssc::ui::CanStartPresetPreview(&activePreview),
+        "an already-applied scene camera can enter preview editing");
     passed &= Check(ssc::ui::CanEditPreset(&activePreview, true),
         "editing is available while the scene preview session is open");
     passed &= Check(!ssc::ui::CanEditPreset(&activePreview, false),
@@ -218,16 +218,59 @@ int main()
         false, false, false, 0, defaults, "Camera ownership lost" };
     passed &= Check(!ssc::ui::CanEditPreset(&ownershipLost, true),
         "camera ownership loss immediately locks editing");
-    passed &= Check(!ssc::ui::CanOpenPresetEditor(&ownershipLost, true),
-        "an unavailable camera cannot open a recovery editor");
+    passed &= Check(!ssc::ui::CanStartPresetPreview(&ownershipLost),
+        "an unavailable camera cannot start preview editing");
+
+    ssc::core::VisibilityEvaluationSnapshot visibilitySnapshot;
+    ssc::core::CameraCandidateVisibility usableCandidate;
+    usableCandidate.presetID = "usable";
+    usableCandidate.usable = true;
+    usableCandidate.visibleParticipantCount = 2;
+    usableCandidate.visiblePointCount = 5;
+    usableCandidate.availablePointCount = 6;
+    usableCandidate.participants.resize(2);
+    visibilitySnapshot.candidates.push_back(usableCandidate);
+    ssc::core::CameraCandidateVisibility blockedCandidate;
+    blockedCandidate.presetID = "blocked";
+    blockedCandidate.visibleParticipantCount = 1;
+    blockedCandidate.visiblePointCount = 3;
+    blockedCandidate.availablePointCount = 5;
+    blockedCandidate.failureReason =
+        ssc::core::CandidateFailureReason::kParticipantNotVisible;
+    blockedCandidate.participants.resize(2);
+    visibilitySnapshot.candidates.push_back(blockedCandidate);
+
+    const auto usableSummary = ssc::ui::SummarizePresetForScene(
+        &visibilitySnapshot, "usable");
+    passed &= Check(usableSummary.status == ssc::ui::PresetSceneStatus::kUsable &&
+        usableSummary.visibleParticipants == 2 && usableSummary.totalParticipants == 2 &&
+        usableSummary.visiblePoints == 5 && usableSummary.availablePoints == 6,
+        "dashboard reports participant and point quality for a usable preset");
+    const auto blockedSummary = ssc::ui::SummarizePresetForScene(
+        &visibilitySnapshot, "blocked");
+    passed &= Check(blockedSummary.status == ssc::ui::PresetSceneStatus::kBlocked &&
+        blockedSummary.visibleParticipants == 1 && blockedSummary.totalParticipants == 2 &&
+        blockedSummary.visiblePoints == 3 && blockedSummary.availablePoints == 5 &&
+        blockedSummary.failureReason ==
+            ssc::core::CandidateFailureReason::kParticipantNotVisible,
+        "dashboard reports quality and failure reason for a blocked preset");
+    const auto missingSummary = ssc::ui::SummarizePresetForScene(
+        &visibilitySnapshot, "not-evaluated");
+    passed &= Check(missingSummary.status == ssc::ui::PresetSceneStatus::kNotEvaluated,
+        "dashboard distinguishes a preset that was not evaluated");
+    passed &= Check(ssc::ui::CountUsablePresets(&visibilitySnapshot) == 1,
+        "dashboard counts only usable presets");
 
     auto* previewService = ssc::runtime::PresetPreviewService::GetSingleton();
     previewService->EndPreviewSession();
     previewService->BeginPreviewSession();
-    const auto oldRevision = previewService->SetPreview(defaults);
-    const auto currentRevision = previewService->SetPreview(combined);
+    const auto oldRevision = previewService->SetPreview(defaults, "default");
+    const auto currentRevision = previewService->SetPreview(combined, "combined");
     passed &= Check(currentRevision > oldRevision,
         "each realtime edit receives a newer revision");
+    const auto currentRequest = previewService->Request();
+    passed &= Check(currentRequest && currentRequest->presetID == "combined",
+        "preview request identifies the dashboard preset being edited");
     previewService->PublishFeedback({
         true, true, true, oldRevision, defaults, "Old preview applied" });
     auto feedback = previewService->Feedback();
@@ -248,6 +291,12 @@ int main()
         "Save is disabled without a draft");
     previewService->EndPreviewSession();
     previewService->ClearPreview();
+    const auto firstClearRequest = previewService->Request();
+    previewService->ClearPreview();
+    const auto repeatedClearRequest = previewService->Request();
+    passed &= Check(firstClearRequest && !firstClearRequest->transform &&
+        repeatedClearRequest == firstClearRequest,
+        "repeated editor close notifications publish only one preview reset");
 
     const auto presetPath = TemporaryPresetPath();
     std::error_code ignored;

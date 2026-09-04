@@ -8,25 +8,43 @@ namespace ssc::runtime
         return std::addressof(singleton);
     }
 
-    std::uint64_t PresetPreviewService::SetPreview(const PresetTransform& a_transform)
+    std::uint64_t PresetPreviewService::SetPreview(
+        const PresetTransform& a_transform,
+        std::string a_presetID)
     {
         const auto revision = NextRevision();
         request_.store(
             std::make_shared<const PresetPreviewRequest>(
-                PresetPreviewRequest{ revision, a_transform }),
+                PresetPreviewRequest{ revision, a_transform, std::move(a_presetID) }),
             std::memory_order_release);
         return revision;
     }
 
     void PresetPreviewService::ClearPreview() noexcept
     {
-        try {
-            request_.store(
-                std::make_shared<const PresetPreviewRequest>(
-                    PresetPreviewRequest{ NextRevision(), std::nullopt }),
-                std::memory_order_release);
-        } catch (...) {
-            request_.store(nullptr, std::memory_order_release);
+        auto current = request_.load(std::memory_order_acquire);
+        while (current && current->transform) {
+            std::shared_ptr<const PresetPreviewRequest> cleared;
+            try {
+                cleared = std::make_shared<const PresetPreviewRequest>(
+                    PresetPreviewRequest{ NextRevision(), std::nullopt, {} });
+            } catch (...) {
+                std::shared_ptr<const PresetPreviewRequest> empty;
+                static_cast<void>(request_.compare_exchange_strong(
+                    current,
+                    empty,
+                    std::memory_order_acq_rel,
+                    std::memory_order_acquire));
+                return;
+            }
+
+            if (request_.compare_exchange_weak(
+                    current,
+                    std::move(cleared),
+                    std::memory_order_acq_rel,
+                    std::memory_order_acquire)) {
+                return;
+            }
         }
     }
 

@@ -4,6 +4,7 @@
 #include "runtime/PresetRepository.h"
 #include "runtime/SexLabPSceneSource.h"
 #include "runtime/SmoothCamCameraControl.h"
+#include "runtime/WorldDebugVisualization.h"
 #include "ui/PresetEditorMenu.h"
 
 namespace ssc::runtime
@@ -26,7 +27,11 @@ namespace ssc::runtime
         auto log = std::make_shared<spdlog::logger>("global log"s, std::move(sink));
         spdlog::set_default_logger(std::move(log));
         spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] %v");
+#if defined(SSC_ENABLE_VISIBILITY_DEBUG)
+        spdlog::set_level(spdlog::level::debug);
+#else
         spdlog::set_level(spdlog::level::info);
+#endif
         spdlog::flush_on(spdlog::level::info);
     }
 
@@ -63,6 +68,7 @@ namespace ssc::runtime
                 static_cast<void>(
                     SmoothCamCameraControl::GetSingleton()->RegisterAPIListener(messaging));
                 static_cast<void>(ssc::ui::PresetEditorMenu::Register());
+                static_cast<void>(WorldDebugVisualization::Register());
                 break;
             case SKSE::MessagingInterface::kPostPostLoad:
                 static_cast<void>(

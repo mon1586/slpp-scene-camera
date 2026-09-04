@@ -2,7 +2,7 @@
 
 Native SKSE scene-camera plugin for SexLab P+ and SmoothCam.
 
-When a player-involved SexLab P+ scene reaches `AnimationStart`, the plugin captures a fixed scene anchor from the participants' Pelvis nodes after the camera update boundary. Its position is the Pelvis average, and its forward is the inverse of the player Pelvis node's horizontal world forward, with actor yaw used only as a degenerate-axis fallback. This makes preset yaw `0` the player's front side and yaw `±180` the back side. The first valid preset defines screen-relative `Pan Right`/`Pan Up` framing plus a `yaw`/`pitch`/`distance` orbit, and a matching `AnimationChange` reapplies it after recapturing the anchor. Presets can be created, edited, deleted, and reloaded through an SKSE Menu Framework window; changing any framing or orbit value requests a live camera preview without saving. Collision, LOS, and clearance selection are not implemented yet.
+When a player-involved SexLab P+ scene reaches `AnimationStart`, the plugin captures a fixed scene anchor from the participants' Pelvis nodes after the camera update boundary. Its position is the Pelvis average, and its forward is the inverse of the player Pelvis node's horizontal world forward, with actor yaw used only as a degenerate-axis fallback. This makes preset yaw `0` the player's front side and yaw `±180` the back side. Presets define screen-relative `Pan Right`/`Pan Up` framing plus a `yaw`/`pitch`/`distance` orbit. Each preset is evaluated against the participants' face, chest, and waist points, and the first preset that can show every participant is selected. The Camera Presets dashboard reports each preset as usable, blocked, or not evaluated without changing the camera. `Preview & edit` then pauses game time and starts the live camera editor, including for a preset blocked in the current scene.
 
 The POC has no ESP and no dedicated Papyrus script. SexLab P+ integration uses the native SKSE `ModCallbackEvent` dispatcher. P+ currently emits unprefixed `AnimationStart`/`AnimationChange`/`AnimationEnd` compatibility events alongside its documented Papyrus hook API. Because P+ passes `thread_id` as the second `SendModEvent` argument, the native adapter parses it from `strArg` and treats `numArg` only as a compatibility fallback. Generic event names are accepted only when the sender is a quest defined by `SexLab.esm`.
 
@@ -15,6 +15,15 @@ The POC has no ESP and no dedicated Papyrus script. SexLab P+ integration uses t
 - SKSE Menu Framework 3.4 or later (optional; required only for the in-game preset editor)
 
 Improved Camera is unsupported because it is known to compete for the same camera path. If `ImprovedCameraSE.dll` is loaded, Sexlab Scene Camera refuses to acquire camera control and reports the reason in the preset page.
+
+### Recommended configuration
+
+To prevent NPCs from fading when the camera gets too close, enable the following option in `SSEDisplayTweaks.ini`:
+
+```ini
+[Miscellaneous]
+DisableActorFade=true
+```
 
 For an unambiguous test, disable SexLab's automatic free-camera/TFC option so it does not compete with the POC after the scene starts.
 
@@ -32,6 +41,8 @@ git -C lib/commonlibsse-ng submodule update --init extern/openvr
 
 The anchor marker is controlled by the `SSC_ENABLE_DEBUG_ANCHOR` CMake option, which defaults to `OFF`. Pass `-EnableDebugAnchor` to `build.cmd` when a visible marker is needed.
 
+Visibility rays are also disabled in distribution builds. Pass `-EnableVisibilityDebug` to `build.cmd` to enable their HUD layer and detailed per-point logging. Its status and occluded-segment control are on the Camera Presets page.
+
 Install the contents of `dist` under `Data`. This includes the DLL and the initial `Data/SKSE/Plugins/SexlabSceneCamera/presets.json`. The matching log is written to the normal SKSE log directory as `SexlabSceneCamera.log`.
 
 ## In-game validation
@@ -39,12 +50,16 @@ Install the contents of `dist` under `Data`. This includes the DLL and the initi
 1. Start the game with SexLab P+, SmoothCam, SKSE Menu Framework 3.4+, and this mod enabled.
 2. Start a SexLab scene containing the player.
 3. In a debug-anchor build, confirm the arrow points opposite the player Pelvis front for both front-facing and back-facing animation poses. Confirm `SexlabSceneCamera.log` records the Pelvis and actor direction samples, anchor, and applied pose.
-4. Open Mod Control Panel, choose Sexlab Scene Camera > Camera Presets, and open the preset editor.
-5. Drag `Pan Right`, `Pan Up`, then orbit `yaw`, `pitch`, and `distance`; confirm the scene camera follows while the blocking editor owns input and pauses game time.
+4. Open Mod Control Panel and choose Sexlab Scene Camera > Camera Presets. Confirm the dashboard lists all presets with usable, blocked, or not-evaluated status and that selecting a row does not change the camera.
+5. Choose a preset and select `Preview & edit selected`. Confirm game time pauses only now, then drag `Pan Right`, `Pan Up`, `yaw`, `pitch`, and `distance`; confirm the scene camera and visibility status follow the edits.
 6. Exercise create, update, cancel, delete, and reload, including the unsaved-change and delete confirmations.
 7. Confirm scene time and animation remain paused until the editor closes, then change the animation and confirm the saved framing offset and orbit are reapplied after anchor recapture.
 8. End a scene with the editor closed and confirm ownership returns to SmoothCam immediately.
 9. Remove or disable SKSE Menu Framework and confirm preset loading and the initial camera still work while the editor is absent.
 10. Load the game with Improved Camera enabled and confirm the preset page reports it as unsupported without acquiring camera control.
+11. In an open area, confirm every participant has at least one green face, chest, or waist ray and that the first usable preset becomes active.
+12. Put one participant behind a wall and confirm affected rays stop at red hit markers, the preset is rejected, and another usable preset is selected when available.
+13. In a visibility-debug build, preview a blocked preset and toggle occluded segments; confirm gray hit-to-target paths and yellow hit normals match the saved log results. Confirm the evaluation log counts the physical ray queries used while passing through character collision.
+14. Make every preset unusable, then change the animation; confirm the camera returns to SmoothCam, the dashboard shows every preset as blocked, and `Preview & edit selected` can still acquire an editing preview.
 
 The compiled DLL proves only that the native interfaces and code agree at build time. Menu behavior, input routing, camera-node behavior, and restoration still require the in-game validation above.

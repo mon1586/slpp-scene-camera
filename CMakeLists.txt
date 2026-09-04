@@ -20,6 +20,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 
 option(SSC_BUILD_TESTS "Build unit tests" ON)
 option(SSC_ENABLE_DEBUG_ANCHOR "Show a direction arrow at the scene anchor" OFF)
+option(SSC_ENABLE_VISIBILITY_DEBUG "Show evaluated visibility rays in a debug HUD layer" OFF)
 
 # The POC uses a vtable hook and does not allocate a trampoline. Keep CommonLib's
 # own tests and patch-safety-only dependency out of this consumer build.
@@ -44,6 +45,8 @@ set(SSC_SOURCES
     src/core/CameraPose.h
     src/core/SceneAnchor.cpp
     src/core/SceneAnchor.h
+    src/core/VisibilityEvaluation.cpp
+    src/core/VisibilityEvaluation.h
     src/runtime/CameraHook.cpp
     src/runtime/CameraHook.h
     src/runtime/CameraOutput.cpp
@@ -56,11 +59,14 @@ set(SSC_SOURCES
     src/runtime/PresetPreviewService.h
     src/runtime/ICameraControl.h
     src/runtime/IDebugVisualization.h
+    src/runtime/IVisibilityProbe.h
     src/runtime/IPresetProvider.h
     src/runtime/IRuntimeClient.h
     src/runtime/ISceneSource.h
     src/runtime/PluginRuntime.cpp
     src/runtime/PluginRuntime.h
+    src/runtime/HavokVisibilityProbe.cpp
+    src/runtime/HavokVisibilityProbe.h
     src/runtime/SceneEvent.h
     src/runtime/SceneParticipantSnapshotStorage.h
     src/runtime/SceneKey.h
@@ -115,6 +121,10 @@ target_compile_definitions(
 
 if(SSC_ENABLE_DEBUG_ANCHOR)
     target_compile_definitions(SexlabSceneCamera PRIVATE SSC_ENABLE_DEBUG_ANCHOR=1)
+endif()
+
+if(SSC_ENABLE_VISIBILITY_DEBUG)
+    target_compile_definitions(SexlabSceneCamera PRIVATE SSC_ENABLE_VISIBILITY_DEBUG=1)
 endif()
 
 target_precompile_headers(SexlabSceneCamera PRIVATE src/pch.h)
@@ -202,5 +212,27 @@ if(SSC_BUILD_TESTS)
     add_test(
         NAME SexlabSceneCamera.PresetSettingsSpec
         COMMAND SexlabSceneCameraPresetSettingsSpecTests
+    )
+
+    add_executable(
+        SexlabSceneCameraVisibilityEvaluationTests
+        tests/VisibilityEvaluationTests.cpp
+        src/core/VisibilityEvaluation.cpp
+        src/core/VisibilityEvaluation.h
+        src/core/CameraTypes.h
+    )
+    target_include_directories(SexlabSceneCameraVisibilityEvaluationTests PRIVATE src)
+    if(MSVC)
+        target_compile_options(
+            SexlabSceneCameraVisibilityEvaluationTests
+            PRIVATE
+                /EHsc
+                /permissive-
+                /W4
+        )
+    endif()
+    add_test(
+        NAME SexlabSceneCamera.VisibilityEvaluation
+        COMMAND SexlabSceneCameraVisibilityEvaluationTests
     )
 endif()

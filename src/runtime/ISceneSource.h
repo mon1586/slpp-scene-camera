@@ -18,5 +18,9 @@ namespace ssc::runtime
         [[nodiscard]] virtual std::optional<SceneAnchorSamples> CollectAnchorInput(
             const SceneParticipantSnapshot& a_participants,
             std::span<Vec3> a_pelvisStorage) const = 0;
+        [[nodiscard]] virtual std::optional<SceneVisibilitySamples> CollectVisibilityInput(
+            const SceneParticipantSnapshot& a_participants,
+            std::span<std::uint32_t> a_participantIDStorage,
+            std::span<VisibilityTarget> a_targetStorage) const = 0;
     };
 }

@@ -3,6 +3,7 @@
 #include "runtime/ICameraControl.h"
 #include "runtime/IDebugVisualization.h"
 #include "runtime/IPresetProvider.h"
+#include "runtime/IVisibilityProbe.h"
 #include "runtime/PresetPreviewService.h"
 #include "runtime/IRuntimeClient.h"
 #include "runtime/ISceneSource.h"
@@ -22,6 +23,7 @@ namespace ssc
             runtime::IPresetProvider& a_presetProvider,
             runtime::PresetPreviewService& a_previewService,
             runtime::ICameraControl& a_cameraControl,
+            runtime::IVisibilityProbe& a_visibilityProbe,
             runtime::IDebugVisualization& a_debugVisualization) noexcept;
 
         [[nodiscard]] bool NeedsUpdate() const noexcept override;
@@ -53,6 +55,15 @@ namespace ssc
         [[nodiscard]] bool ApplyRequestedTransform(
             const std::shared_ptr<const runtime::PresetPreviewRequest>& a_request,
             bool a_liveEdit);
+        [[nodiscard]] core::CameraCandidateVisibility EvaluateVisibilityCandidate(
+            std::string a_presetID,
+            const runtime::PresetTransform& a_transform,
+            const runtime::SceneVisibilitySamples& a_samples,
+            std::size_t& a_rayCount);
+        [[nodiscard]] bool EvaluatePreviewVisibility(
+            const runtime::PresetPreviewRequest& a_request);
+        [[nodiscard]] bool EvaluateVisibility();
+        [[nodiscard]] bool ReleaseCamera(std::string_view a_reason);
         void PublishPreviewFeedback(
             bool a_applied,
             std::string a_message,
@@ -65,6 +76,7 @@ namespace ssc
         runtime::IPresetProvider* presetProvider_{ nullptr };
         runtime::PresetPreviewService* previewService_{ nullptr };
         runtime::ICameraControl* cameraControl_{ nullptr };
+        runtime::IVisibilityProbe* visibilityProbe_{ nullptr };
         runtime::IDebugVisualization* debugVisualization_{ nullptr };
         SceneSession session_;
         runtime::SceneParticipantSnapshot participants_;
@@ -75,8 +87,11 @@ namespace ssc
         std::atomic_bool cameraPoseActive_{ false };
         std::optional<core::SceneAnchor> anchor_;
         std::optional<runtime::CameraPose> cameraPose_;
+        std::optional<std::string> activePresetID_;
+        std::shared_ptr<const core::VisibilityEvaluationSnapshot> visibilityEvaluation_;
         std::shared_ptr<const runtime::PresetPreviewRequest> appliedPreviewRequest_;
         core::SceneAnchorCalculator anchorCalculator_;
         core::CameraPoseCalculator poseCalculator_;
+        core::VisibilityEvaluator visibilityEvaluator_;
     };
 }

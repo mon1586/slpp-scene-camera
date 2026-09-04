@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/VisibilityEvaluation.h"
 #include "runtime/IPresetProvider.h"
 
 #include <atomic>
@@ -13,6 +14,7 @@ namespace ssc::runtime
     {
         std::uint64_t revision{ 0 };
         std::optional<PresetTransform> transform;
+        std::string presetID;
     };
 
     struct PresetPreviewFeedback
@@ -23,6 +25,7 @@ namespace ssc::runtime
         std::uint64_t appliedRevision{ 0 };
         std::optional<PresetTransform> currentTransform;
         std::string message{ "No active player scene" };
+        std::shared_ptr<const core::VisibilityEvaluationSnapshot> visibilityEvaluation;
     };
 
     class PresetPreviewService
@@ -30,7 +33,9 @@ namespace ssc::runtime
     public:
         static PresetPreviewService* GetSingleton() noexcept;
 
-        [[nodiscard]] std::uint64_t SetPreview(const PresetTransform& a_transform);
+        [[nodiscard]] std::uint64_t SetPreview(
+            const PresetTransform& a_transform,
+            std::string a_presetID = {});
         void ClearPreview() noexcept;
         [[nodiscard]] std::shared_ptr<const PresetPreviewRequest> Request() const noexcept;
 

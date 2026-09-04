@@ -1,5 +1,6 @@
 #include "SceneCamera.h"
 #include "runtime/CameraHook.h"
+#include "runtime/HavokVisibilityProbe.h"
 #include "runtime/PresetRepository.h"
 #include "runtime/PresetPreviewService.h"
 #include "runtime/PluginRuntime.h"
@@ -44,6 +45,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
             *ssc::runtime::PresetRepository::GetSingleton(),
             *ssc::runtime::PresetPreviewService::GetSingleton(),
             *ssc::runtime::SmoothCamCameraControl::GetSingleton(),
+            *ssc::runtime::HavokVisibilityProbe::GetSingleton(),
             *ssc::runtime::WorldDebugVisualization::GetSingleton());
         ssc::runtime::CameraHook::Configure(
             *sceneCamera,

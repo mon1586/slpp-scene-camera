@@ -52,12 +52,14 @@ namespace ssc
         runtime::IPresetProvider& a_presetProvider,
         runtime::PresetPreviewService& a_previewService,
         runtime::ICameraControl& a_cameraControl,
+        runtime::IVisibilityProbe& a_visibilityProbe,
         runtime::IDebugVisualization& a_debugVisualization) noexcept
     {
         sceneSource_ = std::addressof(a_sceneSource);
         presetProvider_ = std::addressof(a_presetProvider);
         previewService_ = std::addressof(a_previewService);
         cameraControl_ = std::addressof(a_cameraControl);
+        visibilityProbe_ = std::addressof(a_visibilityProbe);
         debugVisualization_ = std::addressof(a_debugVisualization);
     }
 
@@ -218,9 +220,17 @@ namespace ssc
             return;
         }
 
+        const auto previewEnded = anchor_ && !previewSessionActive &&
+            previewRequest != appliedPreviewRequest_ && previewRequest &&
+            !previewRequest->transform && appliedPreviewRequest_ &&
+            appliedPreviewRequest_->transform;
+        if (previewEnded && !EvaluateVisibility()) {
+            return;
+        }
+
         if (cameraPose_ && !previewSessionActive && !ResolveTransform(previewRequest)) {
-            PublishPreviewFeedback(false, "No camera preset is available");
-            Restore("preset editor closed with no camera preset"sv);
+            PublishPreviewFeedback(false, "No visible camera preset is available");
+            static_cast<void>(ReleaseCamera("preset editor closed with no visible camera preset"sv));
             return;
         }
         if (anchor_ && previewRequest != appliedPreviewRequest_) {
@@ -297,6 +307,10 @@ namespace ssc
             anchor_->forward.y,
             anchor_->forward.z);
 
+        if (!EvaluateVisibility()) {
+            return;
+        }
+
         const auto request = previewService_ ? previewService_->Request() : nullptr;
         static_cast<void>(ApplyRequestedTransform(request, false));
     }
@@ -311,7 +325,14 @@ namespace ssc
         if (!snapshot || snapshot->empty()) {
             return std::nullopt;
         }
-        return snapshot->front().transform;
+        if (!activePresetID_) {
+            return std::nullopt;
+        }
+        const auto preset = std::ranges::find_if(*snapshot, [&](const auto& a_preset) {
+            return a_preset.id == *activePresetID_;
+        });
+        return preset != snapshot->end() ?
+            std::optional{ preset->transform } : std::nullopt;
     }
 
     bool SceneCamera::ApplyRequestedTransform(
@@ -332,15 +353,17 @@ namespace ssc
                         feedback ? feedback->appliedRevision : 0);
                     return true;
                 }
-                PublishPreviewFeedback(false, "No camera preset is available");
-                Restore("no camera preset remains"sv);
+                PublishPreviewFeedback(false, "No visible camera preset is available");
+                static_cast<void>(ReleaseCamera("no visible camera preset remains"sv));
                 return false;
             }
             const auto previewPossible = anchor_.has_value() && cameraControl_ &&
                 cameraControl_->CanAcquire();
             const auto message = cameraControl_ && !previewPossible ?
                 std::string{ cameraControl_->UnavailableReason() } :
-                std::string{ "No camera preset is available" };
+                std::string{ visibilityEvaluation_ && !visibilityEvaluation_->candidates.empty() ?
+                    "No camera preset can show every participant" :
+                    "No camera preset is available" };
             PublishPreviewFeedback(
                 false,
                 message,
@@ -357,7 +380,222 @@ namespace ssc
             appliedPreviewRequest_ = previewService_ ? previewService_->Request() : a_request;
             return false;
         }
+        if (a_liveEdit && a_request && a_request->transform) {
+            static_cast<void>(EvaluatePreviewVisibility(*a_request));
+            PublishPreviewFeedback(
+                true,
+                "Live preview",
+                *transform,
+                true,
+                revision);
+        }
         appliedPreviewRequest_ = a_request;
+        return true;
+    }
+
+    core::CameraCandidateVisibility SceneCamera::EvaluateVisibilityCandidate(
+        std::string a_presetID,
+        const runtime::PresetTransform& a_transform,
+        const runtime::SceneVisibilitySamples& a_samples,
+        std::size_t& a_rayCount)
+    {
+        auto pose = poseCalculator_.Evaluate(
+            *anchor_,
+            {
+                {
+                    a_transform.framingOffset.right,
+                    a_transform.framingOffset.up,
+                },
+                {
+                    a_transform.orbit.yawDegrees,
+                    a_transform.orbit.pitchDegrees,
+                    a_transform.orbit.distance,
+                },
+            });
+
+        std::vector<core::VisibilityPointResult> pointResults;
+        pointResults.reserve(a_samples.targets.size());
+        for (const auto& target : a_samples.targets) {
+            core::VisibilityPointResult point;
+            point.participantIndex = target.participantIndex;
+            point.participantID = target.participantID;
+            point.point = target.point;
+            point.target = target.position ? ToCore(*target.position) : core::Vec3{};
+            point.rayStart = pose ? pose->position : core::Vec3{};
+
+            if (!pose) {
+                point.hitObject = "camera pose unavailable";
+            } else if (!target.position) {
+                point.hitObject = "participant node unavailable";
+            } else if (!visibilityProbe_) {
+                point.hitObject = "visibility probe unavailable";
+            } else {
+                const auto hit = visibilityProbe_->Trace(
+                    ToRuntime(pose->position),
+                    *target.position,
+                    target.participantID);
+                a_rayCount += hit.queryCount;
+                point.hitFraction = hit.fraction;
+                point.hitPosition = hit.position ?
+                    std::optional{ ToCore(*hit.position) } : std::nullopt;
+                point.hitNormal = hit.normal ?
+                    std::optional{ ToCore(*hit.normal) } : std::nullopt;
+                point.hitObjectID = hit.objectID;
+                point.hitObject = hit.object;
+
+                if (!hit.querySucceeded) {
+                    point.status = core::VisibilityPointStatus::kUnavailable;
+                } else if (hit.startsInsideCollision) {
+                    point.status = core::VisibilityPointStatus::kStartsInsideCollision;
+                } else if (hit.reachesTarget) {
+                    point.status = core::VisibilityPointStatus::kVisible;
+                } else {
+                    point.status = core::VisibilityPointStatus::kObstructed;
+                }
+            }
+            pointResults.push_back(std::move(point));
+        }
+
+        return visibilityEvaluator_.Evaluate(
+            std::move(a_presetID),
+            std::move(pose),
+            a_samples.participantIDs,
+            std::move(pointResults));
+    }
+
+    bool SceneCamera::EvaluatePreviewVisibility(
+        const runtime::PresetPreviewRequest& a_request)
+    {
+        if (!anchor_ || !a_request.transform) {
+            return false;
+        }
+
+        constexpr auto targetCapacity = runtime::SceneParticipantSnapshot::kCapacity *
+            runtime::SceneVisibilitySamples::kPointsPerParticipant;
+        std::array<std::uint32_t, runtime::SceneParticipantSnapshot::kCapacity> participantIDs{};
+        std::array<runtime::VisibilityTarget, targetCapacity> targets{};
+        const auto samples = sceneSource_ ?
+            sceneSource_->CollectVisibilityInput(participants_, participantIDs, targets) :
+            std::nullopt;
+        auto evaluation = std::make_shared<core::VisibilityEvaluationSnapshot>();
+        if (!samples) {
+            visibilityEvaluation_ = std::move(evaluation);
+            if (debugVisualization_) {
+                debugVisualization_->ShowVisibility(visibilityEvaluation_);
+            }
+            return false;
+        }
+
+        std::size_t rayCount = 0;
+        auto candidate = EvaluateVisibilityCandidate(
+            a_request.presetID.empty() ? "<new preset>" : a_request.presetID,
+            *a_request.transform,
+            *samples,
+            rayCount);
+        logger::debug(
+            "Preview visibility '{}': {}, participants {}/{}, points {}/{}, {} physics ray(s)",
+            candidate.presetID,
+            core::CandidateFailureReasonName(candidate.failureReason),
+            candidate.visibleParticipantCount,
+            candidate.participants.size(),
+            candidate.visiblePointCount,
+            candidate.availablePointCount,
+            rayCount);
+        evaluation->candidates.push_back(std::move(candidate));
+        visibilityEvaluation_ = std::move(evaluation);
+        if (debugVisualization_) {
+            debugVisualization_->ShowVisibility(visibilityEvaluation_);
+        }
+        return true;
+    }
+
+    bool SceneCamera::EvaluateVisibility()
+    {
+        activePresetID_.reset();
+
+        auto evaluation = std::make_shared<core::VisibilityEvaluationSnapshot>();
+        const auto presetSnapshot = presetProvider_ ? presetProvider_->Snapshot() : nullptr;
+        if (!anchor_ || !presetSnapshot || presetSnapshot->empty()) {
+            visibilityEvaluation_ = evaluation;
+            if (debugVisualization_) {
+                debugVisualization_->ShowVisibility(visibilityEvaluation_);
+            }
+            return true;
+        }
+
+        constexpr auto targetCapacity = runtime::SceneParticipantSnapshot::kCapacity *
+            runtime::SceneVisibilitySamples::kPointsPerParticipant;
+        std::array<std::uint32_t, runtime::SceneParticipantSnapshot::kCapacity> participantIDs{};
+        std::array<runtime::VisibilityTarget, targetCapacity> targets{};
+        const auto visibilitySamples = sceneSource_ ?
+            sceneSource_->CollectVisibilityInput(participants_, participantIDs, targets) :
+            std::nullopt;
+        if (!visibilitySamples) {
+            logger::error("Could not collect participant visibility points");
+            visibilityEvaluation_ = evaluation;
+            if (debugVisualization_) {
+                debugVisualization_->ShowVisibility(visibilityEvaluation_);
+            }
+            static_cast<void>(ReleaseCamera("participant visibility points are unavailable"sv));
+            PublishPreviewFeedback(false, "Participant visibility points are unavailable");
+            return false;
+        }
+
+        evaluation->candidates.reserve(presetSnapshot->size());
+        const auto startedAt = std::chrono::steady_clock::now();
+        std::size_t rayCount = 0;
+        for (const auto& preset : *presetSnapshot) {
+            auto candidate = EvaluateVisibilityCandidate(
+                preset.id,
+                preset.transform,
+                *visibilitySamples,
+                rayCount);
+            logger::info(
+                "Visibility candidate '{}': {}, participants {}/{}, points {}/{}",
+                candidate.presetID,
+                core::CandidateFailureReasonName(candidate.failureReason),
+                candidate.visibleParticipantCount,
+                candidate.participants.size(),
+                candidate.visiblePointCount,
+                candidate.availablePointCount);
+            for (const auto& point : candidate.points) {
+                logger::debug(
+                    "Visibility '{}' participant {:08X} {}: {}, hit={}, fraction={:.5f}, position=({}, {}, {})",
+                    candidate.presetID,
+                    point.participantID,
+                    core::VisibilityPointName(point.point),
+                    core::VisibilityPointStatusName(point.status),
+                    point.hitObject.empty() ? "none" : point.hitObject,
+                    point.hitFraction,
+                    point.hitPosition ? point.hitPosition->x : 0.0F,
+                    point.hitPosition ? point.hitPosition->y : 0.0F,
+                    point.hitPosition ? point.hitPosition->z : 0.0F);
+            }
+
+            if (!activePresetID_ && candidate.usable) {
+                activePresetID_ = candidate.presetID;
+            }
+            evaluation->candidates.push_back(std::move(candidate));
+        }
+
+        const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - startedAt);
+        logger::info(
+            "Visibility evaluation completed: {} preset(s), {} physics ray(s), {:.3f} ms, selected={}",
+            evaluation->candidates.size(),
+            rayCount,
+            static_cast<double>(elapsed.count()) / 1000.0,
+            activePresetID_ ? *activePresetID_ : "none");
+
+        visibilityEvaluation_ = std::move(evaluation);
+        if (debugVisualization_) {
+            debugVisualization_->ShowVisibility(visibilityEvaluation_);
+        }
+
+        if (!activePresetID_) {
+            static_cast<void>(ReleaseCamera("no preset can show every participant"sv));
+            PublishPreviewFeedback(false, "No camera preset can show every participant");
+        }
         return true;
     }
 
@@ -467,7 +705,33 @@ namespace ssc
             a_appliedRevision,
             std::move(a_transform),
             std::move(a_message),
+            visibilityEvaluation_,
         });
+    }
+
+    bool SceneCamera::ReleaseCamera(std::string_view a_reason)
+    {
+        if (cameraControl_ && cameraControl_->OwnsCamera()) {
+            const auto releaseResult = cameraControl_->Release();
+            if (releaseResult == runtime::CameraReleaseResult::kWrongThread) {
+                resetRequested_.store(true, std::memory_order_release);
+                return false;
+            }
+            if (releaseResult == runtime::CameraReleaseResult::kFailed) {
+                logger::error("Camera release did not complete; reset will be retried");
+                resetRequested_.store(true, std::memory_order_release);
+                return false;
+            }
+        }
+
+        const auto hadPose = cameraPose_.has_value();
+        cameraPose_.reset();
+        cameraPoseActive_.store(false, std::memory_order_release);
+        appliedPreviewRequest_.reset();
+        if (hadPose) {
+            logger::info("Scene camera released: {}", a_reason);
+        }
+        return true;
     }
 
     void SceneCamera::Restore(std::string_view a_reason)
@@ -480,17 +744,8 @@ namespace ssc
             return;
         }
 
-        if (hadCameraOwnership) {
-            const auto releaseResult = cameraControl_->Release();
-            if (releaseResult == runtime::CameraReleaseResult::kWrongThread) {
-                resetRequested_.store(true, std::memory_order_release);
-                return;
-            }
-            if (releaseResult == runtime::CameraReleaseResult::kFailed) {
-                logger::error("Camera release did not complete; reset will be retried");
-                resetRequested_.store(true, std::memory_order_release);
-                return;
-            }
+        if (hadCameraOwnership && !ReleaseCamera(a_reason)) {
+            return;
         }
         if (hadSession) {
             session_.BeginRestore();
@@ -543,9 +798,12 @@ namespace ssc
         activeSince_ = {};
         if (debugVisualization_) {
             debugVisualization_->HideAnchor();
+            debugVisualization_->HideVisibility();
         }
         cameraPose_.reset();
         appliedPreviewRequest_.reset();
+        activePresetID_.reset();
+        visibilityEvaluation_.reset();
         anchor_.reset();
         session_.Clear();
         PublishPreviewFeedback(false, "No active player scene");

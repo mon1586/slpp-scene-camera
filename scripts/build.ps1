@@ -4,7 +4,8 @@ param(
     [string] $BuildDirectory,
     [switch] $SkipTests,
     [switch] $TestsOnly,
-    [switch] $EnableDebugAnchor
+    [switch] $EnableDebugAnchor,
+    [switch] $EnableVisibilityDebug
 )
 
 $ErrorActionPreference = 'Stop'
@@ -48,6 +49,7 @@ $manifestInstall = if (Test-Path -LiteralPath $installedTriplet -PathType Contai
 $previousCommonLibPrebuilt = $env:COMMONLIB_PREBUILT
 $env:COMMONLIB_PREBUILT = '1'
 $debugAnchor = if ($EnableDebugAnchor) { 'ON' } else { 'OFF' }
+$visibilityDebug = if ($EnableVisibilityDebug) { 'ON' } else { 'OFF' }
 
 try {
     Invoke-Native $cmake @(
@@ -59,16 +61,22 @@ try {
         "-DVCPKG_TARGET_TRIPLET=$triplet",
         "-DVCPKG_MANIFEST_INSTALL=$manifestInstall",
         '-DSSC_BUILD_TESTS=ON',
-        "-DSSC_ENABLE_DEBUG_ANCHOR=$debugAnchor"
+        "-DSSC_ENABLE_DEBUG_ANCHOR=$debugAnchor",
+        "-DSSC_ENABLE_VISIBILITY_DEBUG=$visibilityDebug"
     )
 
     $targets = if ($TestsOnly) {
-        @('SexlabSceneCameraTests', 'SexlabSceneCameraPresetSettingsSpecTests')
+        @(
+            'SexlabSceneCameraTests',
+            'SexlabSceneCameraPresetSettingsSpecTests',
+            'SexlabSceneCameraVisibilityEvaluationTests'
+        )
     } else {
         @(
             'SexlabSceneCamera',
             'SexlabSceneCameraTests',
-            'SexlabSceneCameraPresetSettingsSpecTests'
+            'SexlabSceneCameraPresetSettingsSpecTests',
+            'SexlabSceneCameraVisibilityEvaluationTests'
         )
     }
     $buildArguments = @(

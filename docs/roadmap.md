@@ -98,7 +98,7 @@ SmoothCam V2 APIによる取得、pose反映、goal復帰、解放の主経路�
 
 #### 2.2 clearance非依存のプリセットCRUD
 
-状態: **実装済み／Core・repository自動テスト済み／ゲーム内確認待ち**
+状態: **Preset dashboard・preview編集を含め実装済み／Core・repository自動テスト・DLLビルド済み／ゲーム内確認待ち**
 
 詳細設計は[`preset-crud-design.md`](preset-crud-design.md)に記載する。
 
@@ -114,11 +114,13 @@ SKSE Menuに表示するcamera設定と操作の仕様は[`preset-settings-spec.
 
 UI frameworkにはSKSE Menu Framework 3.4以降を採用する。Mod Control Panelからinput-blockingの専用editorを開き、ゲーム時間はframeworkに停止させたままcamera preview更新だけを継続する。framework未導入時はmenu登録だけを無効にして既存のプリセット読込とcamera機能を維持する。
 
-editorはcamera pose適用済みの場合だけ有効にする。editorはsceneやanchorを参照せず、編集中のtransformとrevisionだけをpreview channelへ送る。editor表示中はゲーム時間を停止し、preview用camera updateだけを継続する。所有権喪失、Apply失敗、ロード、new game、plugin resetでは確認を待たず復帰する。Improved Cameraは既知競合として非サポートとし、検出時はcameraを取得しない。
+Preset dashboardではcamera制御を変更せず、保存済みプリセットと現在sceneでの可視状態を表示する。選択したプリセットのpreview編集を開始した時だけゲーム時間を停止し、preview用camera updateを継続する。現在sceneで使用可能な候補がなくても、camera制御を取得可能なら使用不可のプリセットを編集用にpreviewできる。所有権喪失、Apply失敗、ロード、new game、plugin resetでは確認を待たず復帰する。Improved Cameraは既知競合として非サポートとし、検出時はcameraを取得しない。
 
 完了条件:
 
 - ゲーム内でCRUDと再読込を完結できる。
+- Dashboardで、cameraを変更せずに現在sceneにおける各プリセットの可視状態を確認できる。
+- 現在sceneで使用可能なプリセットがなくても、既存プリセットまたは新規プリセットのpreview編集を開始できる。
 - framingの`Pan Right`、`Pan Up`とorbitの`yaw`、`pitch`、`distance`の数値操作にカメラが目視で追従する。
 - editor表示中はscene進行を停止し、preview用camera updateだけが継続する。
 - editor外のscene終了では即時にcamera制御を返す。
@@ -146,16 +148,13 @@ editorはcamera pose適用済みの場合だけ有効にする。editorはscene�
 
 #### 2.4 clearance仕様の確定
 
-診断結果を見ながら、次を固定する。
+状態: **可視性評価・キャラクターcollision透過の主要経路をゲーム内確認済み／境界ケース確認待ち**
 
-- 参加者ごとのLOS代表点をPelvisだけにするか、Headなどを加えるか。
-- 候補点周囲のサンプル方向数と必要距離。
-- カメラを点として扱うか、半径を持つsweepを追加するか。sweepを使う場合の初期半径はSmoothCamの実装値も参考にするが、このModの実機結果から決める。
-- static、terrain、家具、actorなど、clearanceとLOSそれぞれで対象にするcollision layer。
-- 有効判定を全参加者LOS必須にするか、主要点の割合または優先度で決めるか。
-- valid候補が0件の場合はカメラを取得しない、直前のvalid poseを維持する、SmoothCamへ復帰する、のどれにするか。
+要件は[`clearance-design.md`](clearance-design.md)に記載する。
 
-ここで固定した入力と判定はゲーム型を含まないCoreの値型にし、境界値をunit testで固定する。
+初期段階では、各プリセットがすべての参加者を映せるかを判定し、使用可能なプリセット同士で見え方の品質を比較できるようにする。カメラ周囲の空間と候補までの移動経路は後続検討とする。
+
+顔、胸、腰の評価点採取、読み込み済み全プリセットの可視判定、参加者単位の有効判定、可視品質、失敗理由、候補0件時の通常camera復帰を実装した。判定結果はログとデバッグ表示で共有し、表示時には再判定しない。参加者・第三者を問わずキャラクターのcollisionを透過し、その先にある非キャラクターcollisionで可視性を判定する。開けた場所でのキャラクターcollision透過と、家具付近での環境collisionによる候補除外をゲーム内ログで確認済みである。キャラクターcollisionと薄い環境collisionがほぼ同じ位置で重なる境界は未解決として残す。
 
 #### 2.5 有効候補の選択
 
@@ -211,8 +210,7 @@ P+の`AnimationChange`を変更開始通知として受信し、1秒後の最初
 - Pelvis node を取得できない参加者と、static collision 内に計算されたアンカーの扱い。
 - 1秒待機でnode transformの反映が間に合わない実例があるか。
 - camera pose実装後、SmoothCam APIを使わないfree camera／photo mode／camera Modとの同時更新が発生しないか。
-- 見切れ防止の対象を全身、上半身、主要部位のどこまでにするか。
+- キャラクターcollisionと薄い環境collisionがほぼ同じ位置で重なる場合の判定方法。
 - LOS とクリアランスから連続領域を作る方法と、計算頻度・性能予算。
-- valid なプリセットが0件の場合の復帰方法。
 - プリセット切り替え時の位置・回転・FOV の補間。
 - 壁際、狭い室内、多人数、極端な身長差での優先順位。
