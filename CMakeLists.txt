@@ -41,6 +41,8 @@ set(SSC_SOURCES
     src/SceneCamera.h
     src/SceneSession.h
     src/core/CameraTypes.h
+    src/core/CandidateSelection.cpp
+    src/core/CandidateSelection.h
     src/core/CameraPose.cpp
     src/core/CameraPose.h
     src/core/SceneAnchor.cpp
@@ -49,6 +51,8 @@ set(SSC_SOURCES
     src/core/VisibilityEvaluation.h
     src/runtime/CameraHook.cpp
     src/runtime/CameraHook.h
+    src/runtime/CameraInput.cpp
+    src/runtime/CameraInput.h
     src/runtime/CameraOutput.cpp
     src/runtime/CameraOutput.h
     src/runtime/CameraPoseAdapter.cpp
@@ -219,6 +223,8 @@ if(SSC_BUILD_TESTS)
         tests/VisibilityEvaluationTests.cpp
         src/core/VisibilityEvaluation.cpp
         src/core/VisibilityEvaluation.h
+        src/core/CandidateSelection.cpp
+        src/core/CandidateSelection.h
         src/core/CameraTypes.h
     )
     target_include_directories(SexlabSceneCameraVisibilityEvaluationTests PRIVATE src)

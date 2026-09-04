@@ -9,6 +9,7 @@
 #include "runtime/ISceneSource.h"
 #include "SceneSession.h"
 #include "core/CameraPose.h"
+#include "core/CandidateSelection.h"
 #include "core/SceneAnchor.h"
 
 namespace ssc
@@ -33,6 +34,7 @@ namespace ssc
         void Update() override;
         void Reset(std::string_view a_reason) override;
         void RequestReset() noexcept override;
+        void RequestPresetStep(int a_direction) noexcept override;
         void EmergencyReset() noexcept override;
 
     private:
@@ -63,6 +65,7 @@ namespace ssc
         [[nodiscard]] bool EvaluatePreviewVisibility(
             const runtime::PresetPreviewRequest& a_request);
         [[nodiscard]] bool EvaluateVisibility();
+        [[nodiscard]] bool SelectPresetStep(int a_direction);
         [[nodiscard]] bool ReleaseCamera(std::string_view a_reason);
         void PublishPreviewFeedback(
             bool a_applied,
@@ -83,6 +86,8 @@ namespace ssc
         std::chrono::steady_clock::time_point activeSince_{};
         std::chrono::steady_clock::time_point anchorCaptureReadyAt_{};
         std::atomic_bool resetRequested_{ false };
+        std::atomic_int presetStepRequested_{ 0 };
+        std::atomic_bool presetSwitchEnabled_{ false };
         std::atomic_bool anchorCapturePending_{ false };
         std::atomic_bool cameraPoseActive_{ false };
         std::optional<core::SceneAnchor> anchor_;
@@ -92,6 +97,7 @@ namespace ssc
         std::shared_ptr<const runtime::PresetPreviewRequest> appliedPreviewRequest_;
         core::SceneAnchorCalculator anchorCalculator_;
         core::CameraPoseCalculator poseCalculator_;
+        core::CandidateSelector candidateSelector_;
         core::VisibilityEvaluator visibilityEvaluator_;
     };
 }

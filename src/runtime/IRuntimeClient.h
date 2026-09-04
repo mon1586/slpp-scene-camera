@@ -15,6 +15,7 @@ namespace ssc::runtime
         virtual void Update() = 0;
         virtual void Reset(std::string_view a_reason) = 0;
         virtual void RequestReset() noexcept = 0;
+        virtual void RequestPresetStep(int a_direction) noexcept = 0;
         virtual void EmergencyReset() noexcept = 0;
     };
 }

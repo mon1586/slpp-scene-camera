@@ -69,7 +69,8 @@ namespace ssc
             previewService_->Request() != appliedPreviewRequest_;
         return anchorCapturePending_.load(std::memory_order_acquire) ||
                cameraPoseActive_.load(std::memory_order_acquire) ||
-               resetRequested_.load(std::memory_order_acquire) || previewChanged;
+               resetRequested_.load(std::memory_order_acquire) ||
+               presetStepRequested_.load(std::memory_order_acquire) != 0 || previewChanged;
     }
 
     bool SceneCamera::AllowsUpdateWhilePaused() const noexcept
@@ -174,6 +175,8 @@ namespace ssc
         }
         anchorCaptureReadyAt_ = std::chrono::steady_clock::now() + kAnimationChangeDelay;
         anchorCapturePending_.store(true, std::memory_order_release);
+        presetSwitchEnabled_.store(false, std::memory_order_release);
+        presetStepRequested_.store(0, std::memory_order_release);
         logger::info("Scene anchor recapture scheduled in {} ms for {:08X}/{}",
             std::chrono::duration_cast<std::chrono::milliseconds>(kAnimationChangeDelay).count(),
             a_event.key.sourceID,
@@ -234,7 +237,17 @@ namespace ssc
             return;
         }
         if (anchor_ && previewRequest != appliedPreviewRequest_) {
-            if (!ApplyRequestedTransform(previewRequest, true)) {
+            if (!ApplyRequestedTransform(previewRequest, previewSessionActive)) {
+                return;
+            }
+        }
+
+        if (previewSessionActive) {
+            presetSwitchEnabled_.store(false, std::memory_order_release);
+            presetStepRequested_.store(0, std::memory_order_release);
+        } else {
+            const auto requestedStep = presetStepRequested_.exchange(0, std::memory_order_acq_rel);
+            if (requestedStep != 0 && !SelectPresetStep(requestedStep)) {
                 return;
             }
         }
@@ -502,6 +515,7 @@ namespace ssc
             candidate.availablePointCount,
             rayCount);
         evaluation->candidates.push_back(std::move(candidate));
+        evaluation->selectedPresetID = evaluation->candidates.front().presetID;
         visibilityEvaluation_ = std::move(evaluation);
         if (debugVisualization_) {
             debugVisualization_->ShowVisibility(visibilityEvaluation_);
@@ -511,6 +525,8 @@ namespace ssc
 
     bool SceneCamera::EvaluateVisibility()
     {
+        presetSwitchEnabled_.store(false, std::memory_order_release);
+        presetStepRequested_.store(0, std::memory_order_release);
         activePresetID_.reset();
 
         auto evaluation = std::make_shared<core::VisibilityEvaluationSnapshot>();
@@ -578,6 +594,8 @@ namespace ssc
             evaluation->candidates.push_back(std::move(candidate));
         }
 
+        evaluation->selectedPresetID = activePresetID_;
+
         const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - startedAt);
         logger::info(
@@ -597,6 +615,42 @@ namespace ssc
             PublishPreviewFeedback(false, "No camera preset can show every participant");
         }
         return true;
+    }
+
+    bool SceneCamera::SelectPresetStep(int a_direction)
+    {
+        if (!presetSwitchEnabled_.load(std::memory_order_acquire) ||
+            !activePresetID_ || !visibilityEvaluation_ || a_direction == 0) {
+            return true;
+        }
+
+        const auto nextPresetID = candidateSelector_.Step(
+            visibilityEvaluation_->candidates, *activePresetID_, a_direction);
+        if (!nextPresetID || *nextPresetID == *activePresetID_) {
+            return true;
+        }
+
+        const auto presetSnapshot = presetProvider_ ? presetProvider_->Snapshot() : nullptr;
+        if (!presetSnapshot) {
+            return true;
+        }
+        const auto preset = std::ranges::find_if(*presetSnapshot, [&](const auto& a_preset) {
+            return a_preset.id == *nextPresetID;
+        });
+        if (preset == presetSnapshot->end()) {
+            return true;
+        }
+
+        activePresetID_ = *nextPresetID;
+        auto updatedEvaluation = std::make_shared<core::VisibilityEvaluationSnapshot>(
+            *visibilityEvaluation_);
+        updatedEvaluation->selectedPresetID = activePresetID_;
+        visibilityEvaluation_ = std::move(updatedEvaluation);
+        if (debugVisualization_) {
+            debugVisualization_->ShowVisibility(visibilityEvaluation_);
+        }
+        logger::info("Camera preset cut to '{}'", *nextPresetID);
+        return ApplyTransform(preset->transform, false, 0);
     }
 
     bool SceneCamera::ApplyTransform(
@@ -670,6 +724,7 @@ namespace ssc
 
         cameraPose_ = runtimePose;
         cameraPoseActive_.store(true, std::memory_order_release);
+        presetSwitchEnabled_.store(!a_liveEdit, std::memory_order_release);
         PublishPreviewFeedback(
             true,
             a_liveEdit ? "Live preview" : "Preset active",
@@ -725,6 +780,8 @@ namespace ssc
         }
 
         const auto hadPose = cameraPose_.has_value();
+        presetSwitchEnabled_.store(false, std::memory_order_release);
+        presetStepRequested_.store(0, std::memory_order_release);
         cameraPose_.reset();
         cameraPoseActive_.store(false, std::memory_order_release);
         appliedPreviewRequest_.reset();
@@ -766,6 +823,14 @@ namespace ssc
         resetRequested_.store(true, std::memory_order_release);
     }
 
+    void SceneCamera::RequestPresetStep(int a_direction) noexcept
+    {
+        if (!presetSwitchEnabled_.load(std::memory_order_acquire) || a_direction == 0) {
+            return;
+        }
+        presetStepRequested_.store(a_direction > 0 ? 1 : -1, std::memory_order_release);
+    }
+
     void SceneCamera::EmergencyReset() noexcept
     {
         if (cameraControl_ && !cameraControl_->EmergencyRelease()) {
@@ -794,6 +859,8 @@ namespace ssc
         participants_ = {};
         anchorCapturePending_.store(false, std::memory_order_release);
         cameraPoseActive_.store(false, std::memory_order_release);
+        presetSwitchEnabled_.store(false, std::memory_order_release);
+        presetStepRequested_.store(0, std::memory_order_release);
         anchorCaptureReadyAt_ = {};
         activeSince_ = {};
         if (debugVisualization_) {

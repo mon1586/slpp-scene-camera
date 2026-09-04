@@ -397,9 +397,13 @@ namespace ssc::runtime
             selectedCandidate_.store(0, std::memory_order_release);
             return;
         }
-        const auto selected = std::ranges::find_if(
-            snapshot->candidates,
-            [](const auto& a_candidate) { return a_candidate.usable; });
+        const auto selected = snapshot->selectedPresetID ?
+            std::ranges::find_if(snapshot->candidates, [&](const auto& a_candidate) {
+                return a_candidate.presetID == *snapshot->selectedPresetID;
+            }) :
+            std::ranges::find_if(
+                snapshot->candidates,
+                [](const auto& a_candidate) { return a_candidate.usable; });
         if (selected != snapshot->candidates.end()) {
             selectedCandidate_.store(
                 static_cast<std::size_t>(

@@ -1,5 +1,6 @@
 #include "SceneCamera.h"
 #include "runtime/CameraHook.h"
+#include "runtime/CameraInput.h"
 #include "runtime/HavokVisibilityProbe.h"
 #include "runtime/PresetRepository.h"
 #include "runtime/PresetPreviewService.h"
@@ -50,6 +51,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
         ssc::runtime::CameraHook::Configure(
             *sceneCamera,
             *ssc::runtime::SexLabPSceneSource::GetSingleton());
+        ssc::runtime::CameraInput::Configure(*sceneCamera);
 
         if (!ssc::runtime::PluginRuntime::RegisterLifecycle(*sceneCamera)) {
             return false;

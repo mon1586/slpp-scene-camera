@@ -72,6 +72,7 @@ namespace ssc::core
     struct VisibilityEvaluationSnapshot
     {
         std::vector<CameraCandidateVisibility> candidates;
+        std::optional<std::string> selectedPresetID;
     };
 
     class VisibilityEvaluator

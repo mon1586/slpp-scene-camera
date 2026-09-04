@@ -1,4 +1,5 @@
 #include "core/VisibilityEvaluation.h"
+#include "core/CandidateSelection.h"
 
 #include <array>
 #include <iostream>
@@ -113,6 +114,24 @@ int main()
     const auto empty = evaluator.Evaluate("empty", pose, noParticipants, {});
     passed &= Check(!empty.usable,
         "a candidate cannot become usable without scene participants");
+
+    CandidateSelector selector;
+    std::array<CameraCandidateVisibility, 4> candidates{};
+    candidates[0].presetID = "blocked";
+    candidates[1].presetID = "good-first";
+    candidates[1].usable = true;
+    candidates[2].presetID = "lower-preferred";
+    candidates[2].usable = true;
+    candidates[3].presetID = "good-tie";
+    candidates[3].usable = true;
+    passed &= Check(
+        selector.Step(candidates, "good-first", 1) ==
+            std::optional<std::string>{ "lower-preferred" },
+        "forward selection advances through usable candidates");
+    passed &= Check(
+        selector.Step(candidates, "good-first", -1) ==
+            std::optional<std::string>{ "good-tie" },
+        "backward selection wraps and skips unusable candidates");
 
     return passed ? 0 : 1;
 }

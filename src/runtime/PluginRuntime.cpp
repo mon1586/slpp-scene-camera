@@ -1,6 +1,7 @@
 #include "runtime/PluginRuntime.h"
 
 #include "runtime/CameraHook.h"
+#include "runtime/CameraInput.h"
 #include "runtime/PresetRepository.h"
 #include "runtime/SexLabPSceneSource.h"
 #include "runtime/SmoothCamCameraControl.h"
@@ -92,6 +93,9 @@ namespace ssc::runtime
                 }
                 if (!CameraHook::RegisterCameraStateSink()) {
                     logger::warn("Camera-state observer is unavailable");
+                }
+                if (!CameraInput::Register()) {
+                    logger::warn("Camera A/D input is unavailable");
                 }
                 if (!SexLabPSceneSource::GetSingleton()->Register(CameraHook::SubmitEvent)) {
                     logger::warn("No scene source was registered");
