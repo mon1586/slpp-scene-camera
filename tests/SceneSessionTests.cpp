@@ -139,7 +139,7 @@ int main()
     const ssc::runtime::PresetTransform previewTransform{
         { 10.0F, 20.0F }, { 30.0F, 5.0F, 200.0F }
     };
-    const auto previewRevision = previewService->SetPreview(previewTransform);
+    const auto previewRevision = previewService->SetPreview(previewTransform, "edited");
     const auto previewRequest = previewService->Request();
     passed &= Check(previewRequest && previewRequest->revision == previewRevision &&
         previewRequest->transform.has_value(),
@@ -151,11 +151,15 @@ int main()
         previewFeedback->previewApplied && previewFeedback->previewPossible &&
         previewFeedback->appliedRevision == previewRevision,
         "preset preview feedback acknowledges the applied revision");
-    previewService->ClearPreview();
+    previewService->ClearPreview("edited");
     const auto clearRequest = previewService->Request();
     passed &= Check(clearRequest && clearRequest->revision > previewRevision &&
-        !clearRequest->transform.has_value(),
-        "clearing preview publishes a newer request without scene data");
+        !clearRequest->transform.has_value() && clearRequest->presetID == "edited",
+        "clearing preview publishes a newer request that retains the edited preset");
+    previewService->ClearPreview();
+    passed &= Check(previewService->Request() == clearRequest &&
+        previewService->Request()->presetID == "edited",
+        "a duplicate close notification does not erase the preset to resume");
     previewService->EndPreviewSession();
     passed &= Check(!previewService->PreviewSessionActive(),
         "preset preview session can be closed");

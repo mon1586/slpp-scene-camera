@@ -36,7 +36,7 @@ namespace ssc::runtime
         [[nodiscard]] std::uint64_t SetPreview(
             const PresetTransform& a_transform,
             std::string a_presetID = {});
-        void ClearPreview() noexcept;
+        void ClearPreview(std::string a_resumePresetID = {}) noexcept;
         [[nodiscard]] std::shared_ptr<const PresetPreviewRequest> Request() const noexcept;
 
         void BeginPreviewSession() noexcept;

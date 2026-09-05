@@ -114,11 +114,12 @@ SKSE Menuに表示するcamera設定と操作の仕様は[`preset-settings-spec.
 
 UI frameworkにはSKSE Menu Framework 3.4以降を採用する。Mod Control Panelからinput-blockingの専用editorを開き、ゲーム時間はframeworkに停止させたままcamera preview更新だけを継続する。framework未導入時はmenu登録だけを無効にして既存のプリセット読込とcamera機能を維持する。
 
-Preset dashboardではcamera制御を変更せず、保存済みプリセットと現在sceneでの可視状態を表示する。選択したプリセットのpreview編集を開始した時だけゲーム時間を停止し、preview用camera updateを継続する。現在sceneで使用可能な候補がなくても、camera制御を取得可能なら使用不可のプリセットを編集用にpreviewできる。所有権喪失、Apply失敗、ロード、new game、plugin resetでは確認を待たず復帰する。Improved Cameraは既知競合として非サポートとし、検出時はcameraを取得しない。
+Player参加scene中は現在適用中のプリセットIDと編集用hotkeyの割り当てを常時表示し、その構図を切り替えずに直接editorへ進める。hotkeyはゲーム内で変更でき、editorの開閉に同じ割り当てを使う。Preset dashboardではcamera制御を変更せず、保存済みプリセットと現在sceneでの可視状態を表示する。Scene toolbarまたはDashboardからpreview編集を開始した時だけゲーム時間を停止し、preview用camera updateを継続する。現在sceneで使用可能な候補がなくても、camera制御を取得可能なら使用不可のプリセットを編集用にpreviewできる。所有権喪失、Apply失敗、ロード、new game、plugin resetでは確認を待たず復帰する。Improved Cameraは既知競合として非サポートとし、検出時はcameraを取得しない。
 
 完了条件:
 
 - ゲーム内でCRUDと再読込を完結できる。
+- active sceneの常設表示から現在適用中のプリセットを直接編集できる。
 - Dashboardで、cameraを変更せずに現在sceneにおける各プリセットの可視状態を確認できる。
 - 現在sceneで使用可能なプリセットがなくても、既存プリセットまたは新規プリセットのpreview編集を開始できる。
 - framingの`Pan Right`、`Pan Up`とorbitの`yaw`、`pitch`、`distance`の数値操作にカメラが目視で追従する。

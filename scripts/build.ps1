@@ -69,14 +69,16 @@ try {
         @(
             'SexlabSceneCameraTests',
             'SexlabSceneCameraPresetSettingsSpecTests',
-            'SexlabSceneCameraVisibilityEvaluationTests'
+            'SexlabSceneCameraVisibilityEvaluationTests',
+            'SexlabSceneCameraFlowTests'
         )
     } else {
         @(
             'SexlabSceneCamera',
             'SexlabSceneCameraTests',
             'SexlabSceneCameraPresetSettingsSpecTests',
-            'SexlabSceneCameraVisibilityEvaluationTests'
+            'SexlabSceneCameraVisibilityEvaluationTests',
+            'SexlabSceneCameraFlowTests'
         )
     }
     $buildArguments = @(

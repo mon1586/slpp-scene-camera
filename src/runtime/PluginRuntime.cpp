@@ -2,6 +2,7 @@
 
 #include "runtime/CameraHook.h"
 #include "runtime/CameraInput.h"
+#include "runtime/EditHotkeySettings.h"
 #include "runtime/PresetRepository.h"
 #include "runtime/SexLabPSceneSource.h"
 #include "runtime/SmoothCamCameraControl.h"
@@ -14,6 +15,8 @@ namespace ssc::runtime
     {
         constexpr auto kPresetRelativePath =
             "Data/SKSE/Plugins/SexlabSceneCamera/presets.json"sv;
+        constexpr auto kSettingsRelativePath =
+            "Data/SKSE/Plugins/SexlabSceneCamera/settings.json"sv;
     }
 
     void PluginRuntime::InitializeLog()
@@ -79,6 +82,19 @@ namespace ssc::runtime
             {
                 const auto gameDirectory =
                     std::filesystem::path{ REL::Module::get().filePath() }.parent_path();
+                const auto settingsPath = gameDirectory / kSettingsRelativePath;
+                const auto settingsResult =
+                    EditHotkeySettings::GetSingleton()->LoadFromFile(settingsPath);
+                if (settingsResult.succeeded) {
+                    const auto keyCode = EditHotkeySettings::GetSingleton()->EditHotkey();
+                    logger::info("Preset edit hotkey loaded as {} ({:#04x})",
+                        EditHotkeyName(keyCode),
+                        keyCode);
+                } else {
+                    logger::error("Could not load preset edit hotkey from {}: {}",
+                        settingsPath.string(),
+                        settingsResult.error);
+                }
                 const auto presetPath = gameDirectory / kPresetRelativePath;
                 const auto loadResult =
                     PresetRepository::GetSingleton()->LoadFromFile(presetPath);

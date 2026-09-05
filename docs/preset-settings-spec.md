@@ -25,6 +25,32 @@ SKSE Menuのカメラプリセットeditorで、ユーザーが何を設定で�
 - Improved Cameraがロードされている場合は非サポート構成としてeditorを無効にし、その理由を表示する。
 - SKSE Menu Frameworkが利用できない場合も、保存済みプリセットを使う通常のscene camera機能には影響させない。
 
+## Scene toolbar
+
+- Player参加scene中は、現在適用中のプリセットを直接編集するためのScene toolbarを常時表示する。
+- Scene toolbarには、現在適用中のプリセットIDと、割り当てられたEdit hotkeyでそのプリセットを編集できることを表示する。
+- Scene toolbarは表示専用とし、mouse cursorを表示せず、mouse入力を捕捉しない。
+- `A` / `D`で現在適用中のプリセットが変わった場合は、Scene toolbarのプリセットIDも追従する。
+- Scene toolbarに表示されたEdit hotkeyを押すと、別のプリセットへ切り替えず、現在表示している構図のプリセットをEditorで開く。
+- Edit hotkeyを押した時点でゲーム時間を停止し、現在適用中のプリセットをcamera previewへ引き継ぐ。
+- Editor内にも同じEdit hotkeyで閉じられることを表示する。未保存変更がある場合は通常のCloseと同じ確認を行う。
+- 現在適用中のプリセットがない場合はその状態を表示し、Edit hotkeyを押してもEditorを開かない。
+- Editor、Mod Control Panel、またはほかのゲーム操作を遮断する画面が開いている間は、重ねて操作できないようScene toolbarを表示しない。
+- Scene toolbarは時間経過では非表示にしない。
+- SKSE Menu Frameworkが利用できない場合はScene toolbarを表示せず、通常のscene camera機能には影響させない。
+
+## Edit hotkey
+
+- 初期割り当ては`F8`とする。
+- Preset dashboardに、現在の割り当てと`Change edit hotkey`を表示する。
+- `Change edit hotkey`の実行後に入力したkeyboard keyを新しい割り当てとして保存する。
+- 割り当て待ちで`Escape`を押した場合は変更を取り消す。`Escape`自体はEdit hotkeyへ割り当てない。
+- 割り当て待ちの間はEditorを開く操作を無効にし、割り当て完了または取消後に利用可能へ戻す。
+- 保存した割り当てはゲームを再起動しても維持する。
+- Edit hotkeyは、現在適用中のプリセットを編集できる時、またはEditorを閉じる時だけ入力を捕捉する。それ以外では同じkeyの入力を妨げない。
+- 捕捉したEdit hotkeyと割り当て入力は、押下から解放まで同じ一回のkey操作として扱い、途中の入力だけをゲームへ渡さない。
+- Edit hotkeyの押下後、Editorが開く前に別の操作遮断画面が開いた場合はEditorを重ねて開かない。
+
 ## 設定項目
 
 Editorには次の5項目を表示する。
@@ -181,7 +207,8 @@ Preset dashboardはsceneとcamera制御の状態にかかわらず開いて状�
 - Editorでは、選択した既存プリセットまたは新規プリセットを編集用previewとして表示する。
 - 編集用previewが実際に適用されるまでは値を編集できない。
 - 編集用preview中は、現在のsceneにおける参加者の可視状態を確認できる。
-- Editorを閉じた時点で使用可能なプリセットがあれば通常のscene cameraへ使用し、なければ通常のcameraへ戻る。
+- 保存済みプリセットをEditorで表示した後に閉じた場合は、可視条件を満たすかにかかわらず、そのプリセットをユーザーの明示選択として通常のscene cameraへ引き継ぐ。
+- 新規プリセットを保存せずに閉じる、または編集対象が削除済みであるなど引き継げるプリセットがない場合は、使用可能なプリセットがあれば通常規則で選び、なければ通常のcameraへ戻る。
 - 現在のsceneで使用できないことを、プリセットデータ自体の破損または恒久的な無効状態として扱わない。
 
 ## Editor表示中のscene進行
@@ -224,9 +251,17 @@ Preset dashboardはsceneとcamera制御の状態にかかわらず開いて状�
 
 ## 完了条件
 
+- Player参加scene中に、現在適用中のプリセットIDと編集開始方法をScene toolbarで確認できる。
+- Scene toolbarでEdit hotkeyの実際の割り当てを確認できる。
+- Edit hotkeyから、別のプリセットへ切り替えず現在適用中のプリセットを編集できる。
+- 編集したプリセットを保存してEditorを閉じた後は、現在の可視状態にかかわらず同じプリセットが表示される。
+- Edit hotkeyを変更して再起動した後も、その割り当てとToolbar表示が維持される。
+- Toolbar表示中にmouse入力を捕捉しない。
+- `A` / `D`でプリセットを切り替えるとScene toolbarの表示対象も切り替わる。
+- 現在適用中のプリセットがない場合はScene toolbarから編集を開始できない。
 - Dashboardを開くだけではcamera制御またはゲーム時間の停止状態を変更しない。
 - Dashboardで、各プリセットの現在sceneにおける状態、使用不可理由、見える参加者数、評価点数を識別できる。
-- `Preview & edit`または`Create & preview preset`を実行した時だけ、ゲーム時間を停止して編集用camera previewを開始する。
+- Edit hotkey、`Preview & edit`、または`Create & preview preset`を実行した時だけ、ゲーム時間を停止して編集用camera previewを開始する。
 - 各設定項目の変化が本仕様どおり画面へ現れる。
 - 編集中の値に応じて現在sceneでの可視状態が更新される。
 - カメラ構図を確認できない状態では編集できない。

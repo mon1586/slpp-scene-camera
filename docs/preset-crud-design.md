@@ -13,6 +13,7 @@
 対象に含めるもの:
 
 - 保存済みプリセットの一覧表示と選択
+- active sceneで現在適用中のプリセットを示す常設操作
 - 新規作成、既存プリセットの更新、削除
 - 保存ファイルからの再読込
 - 現在のカメラ位置からのプリセット作成
@@ -35,6 +36,21 @@
 - 一覧から編集対象を選ぶと、その保存済み値が編集欄へ表示される。
 - active scene中にプリセットを選んだ場合、その構図をプレビュー対象にできる。
 - 未保存の変更がある状態で別のプリセットへ移る場合、変更を保存するか破棄するかを選べる。暗黙に失わない。
+
+### active sceneからの編集
+
+- Player参加scene中は、現在適用中のプリセットIDと編集開始操作を常時確認できる。
+- 常設表示には編集開始用hotkeyの現在の割り当てを示し、覚えていなくても操作を確認できる。
+- 常設表示はmouse cursorを表示せず、mouse入力を捕捉しない。
+- 編集開始操作は現在表示している構図を別のプリセットへ切り替えず、そのプリセットの編集を開始する。
+- 編集開始用hotkeyはゲーム内で変更でき、再起動後も割り当てを維持する。
+- Editor内では同じhotkeyで閉じられ、未保存変更を暗黙に失わない。
+- 保存後にEditorを閉じても、編集したプリセットの可視状態を理由に別のプリセットへ戻さない。
+- 編集した保存済みプリセットは、現在のsceneで使用不可でもユーザーの明示選択として通常表示へ引き継ぐ。
+- 編集対象が削除済みなど保存一覧に存在しない場合だけ、通常の候補選択へ戻す。
+- 通常のscene camera表示中はscene進行を止めず、編集開始後にゲーム時間を停止する。
+- 現在適用中のプリセットがない場合はその状態を表示し、対象のない編集を開始しない。
+- ほかの操作を遮断する画面と同時には操作できない。
 
 ### 作成と更新
 
@@ -131,7 +147,7 @@ SKSE Menu Framework 3系を採用する。公式consumer APIが提供する次�
 - inputの捕捉と、blocking windowが開いているかの確認ができる。
 - ImGui APIはframework側のconsumer headerを介して利用する。
 
-リアルタイム編集ではcamera updateが継続する必要があるため、Mod Control Panel内の導線から専用editor windowを開く。editor表示中はゲーム時間を停止し、mouse、keyboard、gamepad入力をeditorへ捕捉する一方、preview用camera updateだけを継続する。
+リアルタイム編集ではcamera updateが継続する必要があるため、active sceneの常設操作またはMod Control Panel内の導線から専用editor windowを開く。editor表示中はゲーム時間を停止し、mouse、keyboard、gamepad入力をeditorへ捕捉する一方、preview用camera updateだけを継続する。
 
 editorはframework上のinput-blocking windowとして登録し、Mod Control Panel本体を閉じる。時間停止と入力捕捉はframeworkに委ね、camera hook側ではpreview session中の更新だけを許可する。
 
@@ -147,10 +163,12 @@ editorを開けるのはcamera poseが適用済みの場合に限る。editor op
 - 現在のcamera位置から値を取得する操作
 - 新規保存、上書き保存、取消、削除、再読込
 - dirty状態、プレビュー可否、入力または保存エラー
+- active sceneで現在適用中のプリセットIDと編集開始操作を示す常設表示
 
 ## 完了条件
 
 - 一覧、作成、更新、削除、再読込の各操作がゲーム内UIから行える。
+- active sceneの常設表示から、現在適用中のプリセットを切り替えずに編集開始できる。
 - 数値を連続して動かすと、active sceneのカメラが同時に追従する。
 - 保存前、保存後、取消後の構図がそれぞれ定義どおりになる。
 - editor表示中はゲーム時間を停止し、preview用camera updateだけを継続する。

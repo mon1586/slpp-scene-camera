@@ -227,7 +227,7 @@ namespace ssc
             previewRequest != appliedPreviewRequest_ && previewRequest &&
             !previewRequest->transform && appliedPreviewRequest_ &&
             appliedPreviewRequest_->transform;
-        if (previewEnded && !EvaluateVisibility()) {
+        if (previewEnded && !EvaluateVisibility(previewRequest->presetID)) {
             return;
         }
 
@@ -523,7 +523,7 @@ namespace ssc
         return true;
     }
 
-    bool SceneCamera::EvaluateVisibility()
+    bool SceneCamera::EvaluateVisibility(std::string_view a_preferredPresetID)
     {
         presetSwitchEnabled_.store(false, std::memory_order_release);
         presetStepRequested_.store(0, std::memory_order_release);
@@ -588,12 +588,12 @@ namespace ssc
                     point.hitPosition ? point.hitPosition->z : 0.0F);
             }
 
-            if (!activePresetID_ && candidate.usable) {
-                activePresetID_ = candidate.presetID;
-            }
             evaluation->candidates.push_back(std::move(candidate));
         }
 
+        activePresetID_ = candidateSelector_.SelectInitial(
+            evaluation->candidates,
+            a_preferredPresetID);
         evaluation->selectedPresetID = activePresetID_;
 
         const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(

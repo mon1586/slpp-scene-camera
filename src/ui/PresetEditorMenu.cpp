@@ -2,6 +2,7 @@
 
 #include "ui/PresetEditorPolicy.h"
 
+#include "runtime/EditHotkeySettings.h"
 #include "runtime/PresetPreviewService.h"
 #include "runtime/PresetRepository.h"
 #include "runtime/WorldDebugVisualization.h"
@@ -29,8 +30,11 @@ namespace ssc::ui
         struct EditorState
         {
             SKSEMenuFramework::Model::WindowInterface* window{ nullptr };
+            SKSEMenuFramework::Model::WindowInterface* toolbarWindow{ nullptr };
             SKSEMenuFramework::Model::WindowInterface* mainWindow{ nullptr };
             SKSEMenuFramework::Model::Event* event{ nullptr };
+            SKSEMenuFramework::Model::InputEvent* hotkeyInput{ nullptr };
+            SKSEMenuFramework::Model::HudElement* toolbarVisibility{ nullptr };
             std::array<char, 128> idBuffer{};
             std::string selectedID;
             std::string pendingID;
@@ -39,12 +43,25 @@ namespace ssc::ui
             std::uint64_t draftRevision{ 0 };
             std::string message;
             PendingAction pendingAction{ PendingAction::kNone };
+            std::atomic_bool editHotkeyRequested{ false };
+            std::atomic_bool awaitingEditHotkey{ false };
+            std::atomic_uint32_t capturedEditHotkey{ 0 };
+            std::atomic_uint32_t ownedEditHotkey{ 0 };
             bool creating{ false };
             bool dirty{ false };
             bool deleteConfirmation{ false };
+            std::string hotkeyMessage;
         };
 
         EditorState state;
+
+        void ApplyCapturedEditHotkey();
+
+        void CancelEditHotkeyAssignment() noexcept
+        {
+            state.awaitingEditHotkey.store(false, std::memory_order_release);
+            state.capturedEditHotkey.store(0, std::memory_order_release);
+        }
 
         [[nodiscard]] bool SameTransform(
             const runtime::PresetTransform& a_left,
@@ -234,9 +251,10 @@ namespace ssc::ui
 
         void CloseEditor()
         {
+            CancelEditHotkeyAssignment();
             auto* previewService = runtime::PresetPreviewService::GetSingleton();
             previewService->EndPreviewSession();
-            previewService->ClearPreview();
+            previewService->ClearPreview(state.selectedID);
             if (state.window) {
                 state.window->IsOpen.store(false, std::memory_order_release);
             }
@@ -343,7 +361,7 @@ namespace ssc::ui
             ImGuiMCP::EndPopup();
         }
 
-        void OpenEditor()
+        void OpenEditor(std::string_view a_requestedID = {})
         {
             if (!state.window) {
                 return;
@@ -356,6 +374,7 @@ namespace ssc::ui
                 return;
             }
 
+            CancelEditHotkeyAssignment();
             previewService->BeginPreviewSession();
             if (noPresets) {
                 if (state.creating) {
@@ -364,9 +383,11 @@ namespace ssc::ui
                     BeginNew();
                 }
             } else {
+                const auto requestedID = a_requestedID.empty() ?
+                    std::string_view{ state.selectedID } : a_requestedID;
                 const auto selected = std::ranges::find(
                     *snapshot,
-                    state.selectedID,
+                    requestedID,
                     &runtime::CameraPreset::id);
                 if (selected == snapshot->end()) {
                     SelectFirstPreset();
@@ -381,9 +402,179 @@ namespace ssc::ui
             logger::info("Preset editor opened");
         }
 
+        void __stdcall UpdateSceneToolbarVisibility()
+        {
+            try {
+                ApplyCapturedEditHotkey();
+                if (!state.toolbarWindow) {
+                    return;
+                }
+                auto* previewService = runtime::PresetPreviewService::GetSingleton();
+                const auto feedback = previewService->Feedback();
+                const auto blockingWindowOpen = SKSEMenuFramework::IsAnyBlockingWindowOpened();
+                const auto showToolbar = ShouldShowSceneToolbar(
+                    feedback.get(),
+                    previewService->PreviewSessionActive(),
+                    blockingWindowOpen);
+                state.toolbarWindow->IsOpen.store(
+                    showToolbar,
+                    std::memory_order_release);
+
+                const auto editorOpen = state.window &&
+                    state.window->IsOpen.load(std::memory_order_acquire);
+                if (!editorOpen &&
+                    state.editHotkeyRequested.exchange(false, std::memory_order_acq_rel)) {
+                    if (const auto currentPresetID = CurrentPresetID(feedback.get());
+                        CanOpenCurrentPresetEditor(feedback.get(), blockingWindowOpen) &&
+                        currentPresetID) {
+                        OpenEditor(*currentPresetID);
+                    }
+                }
+            } catch (...) {
+                logger::error("SKSE Menu Framework scene toolbar visibility update failed");
+            }
+        }
+
+        void __stdcall RenderSceneToolbar()
+        {
+            try {
+                auto* previewService = runtime::PresetPreviewService::GetSingleton();
+                const auto feedback = previewService->Feedback();
+                if (!ShouldShowSceneToolbar(
+                        feedback.get(),
+                        previewService->PreviewSessionActive(),
+                        SKSEMenuFramework::IsAnyBlockingWindowOpened())) {
+                    return;
+                }
+
+                const auto* viewport = ImGuiMCP::GetMainViewport();
+                if (!viewport) {
+                    return;
+                }
+                ImGuiMCP::SetNextWindowPos(
+                    { viewport->WorkPos.x + viewport->WorkSize.x * 0.5F,
+                        viewport->WorkPos.y + 20.0F },
+                    ImGuiMCP::ImGuiCond_Always,
+                    { 0.5F, 0.0F });
+                ImGuiMCP::SetNextWindowBgAlpha(0.78F);
+                constexpr auto flags = ImGuiMCP::ImGuiWindowFlags_NoDecoration |
+                    ImGuiMCP::ImGuiWindowFlags_AlwaysAutoResize |
+                    ImGuiMCP::ImGuiWindowFlags_NoMove |
+                    ImGuiMCP::ImGuiWindowFlags_NoSavedSettings |
+                    ImGuiMCP::ImGuiWindowFlags_NoFocusOnAppearing |
+                    ImGuiMCP::ImGuiWindowFlags_NoInputs;
+                if (!ImGuiMCP::Begin("Scene Camera Preset##SSC-toolbar", nullptr, flags)) {
+                    ImGuiMCP::End();
+                    return;
+                }
+
+                const auto currentPresetID = CurrentPresetID(feedback.get());
+                if (currentPresetID) {
+                    ImGuiMCP::Text("Preset: %.*s",
+                        static_cast<int>(currentPresetID->size()),
+                        currentPresetID->data());
+                    const auto keyName = runtime::EditHotkeyName(
+                        runtime::EditHotkeySettings::GetSingleton()->EditHotkey());
+                    ImGuiMCP::TextDisabled(
+                        "[A/D] Change    Press [%s] to edit this preset",
+                        keyName.c_str());
+                } else {
+                    ImGuiMCP::TextDisabled("No active camera preset");
+                }
+                ImGuiMCP::End();
+            } catch (const std::exception& exception) {
+                logger::error("SKSE Menu Framework scene toolbar failed: {}", exception.what());
+            } catch (...) {
+                logger::error("SKSE Menu Framework scene toolbar failed");
+            }
+        }
+
+        bool __stdcall OnEditHotkeyInput(RE::InputEvent* a_event)
+        {
+            try {
+                if (!a_event || a_event->GetEventType() != RE::INPUT_EVENT_TYPE::kButton ||
+                    a_event->GetDevice() != RE::INPUT_DEVICE::kKeyboard) {
+                    return false;
+                }
+                const auto* button = a_event->AsButtonEvent();
+                if (!button) {
+                    return false;
+                }
+
+                const auto keyCode = button->GetIDCode();
+                EditHotkeyButtonPhase phase;
+                if (button->IsDown()) {
+                    phase = EditHotkeyButtonPhase::kDown;
+                } else if (button->IsHeld()) {
+                    phase = EditHotkeyButtonPhase::kHeld;
+                } else if (button->IsUp()) {
+                    phase = EditHotkeyButtonPhase::kUp;
+                } else {
+                    return false;
+                }
+
+                const auto editorOpen = state.window &&
+                    state.window->IsOpen.load(std::memory_order_acquire);
+                const auto feedback = runtime::PresetPreviewService::GetSingleton()->Feedback();
+                const auto editHotkey =
+                    runtime::EditHotkeySettings::GetSingleton()->EditHotkey();
+                const auto canToggle = ShouldHandleEditHotkey(
+                    keyCode,
+                    editHotkey,
+                    editorOpen,
+                    !editorOpen && SKSEMenuFramework::IsAnyBlockingWindowOpened(),
+                    feedback.get());
+                const auto decision = DecideEditHotkeyInput(
+                    phase,
+                    keyCode,
+                    editHotkey,
+                    runtime::kEscapeKeyboardKey,
+                    state.ownedEditHotkey.load(std::memory_order_acquire),
+                    state.awaitingEditHotkey.load(std::memory_order_acquire),
+                    canToggle);
+                state.ownedEditHotkey.store(decision.ownedKey, std::memory_order_release);
+                if (decision.finishAssignment) {
+                    state.awaitingEditHotkey.store(false, std::memory_order_release);
+                    state.capturedEditHotkey.store(
+                        decision.capturedKey,
+                        std::memory_order_release);
+                }
+                if (decision.toggleEditor) {
+                    state.editHotkeyRequested.store(true, std::memory_order_release);
+                }
+                return decision.consume;
+            } catch (...) {
+                try {
+                    logger::error("Preset edit hotkey input failed");
+                } catch (...) {
+                }
+                return false;
+            }
+        }
+
+        void ApplyCapturedEditHotkey()
+        {
+            const auto captured =
+                state.capturedEditHotkey.exchange(0, std::memory_order_acq_rel);
+            if (captured == 0) {
+                return;
+            }
+            state.awaitingEditHotkey.store(false, std::memory_order_release);
+            const auto result =
+                runtime::EditHotkeySettings::GetSingleton()->SetEditHotkey(captured);
+            if (result.succeeded) {
+                const auto keyName = runtime::EditHotkeyName(captured);
+                state.hotkeyMessage = "Edit hotkey changed to " + keyName;
+                logger::info("Preset edit hotkey changed to {} ({:#04x})", keyName, captured);
+            } else {
+                state.hotkeyMessage = result.error;
+            }
+        }
+
         void __stdcall RenderSection()
         {
             try {
+                ApplyCapturedEditHotkey();
                 ImGuiMCP::TextWrapped(
                     "Stored presets and their visibility in the current scene. Selecting a row does not move the camera.");
                 const auto feedback = runtime::PresetPreviewService::GetSingleton()->Feedback();
@@ -467,16 +658,39 @@ namespace ssc::ui
                 }
 
                 ImGuiMCP::Separator();
-                const auto canPreview = CanStartPresetPreview(feedback.get());
+                const auto awaitingHotkey =
+                    state.awaitingEditHotkey.load(std::memory_order_acquire);
+                const auto canPreview =
+                    CanStartDashboardPreview(feedback.get(), awaitingHotkey);
                 ImGuiMCP::BeginDisabled(!canPreview);
                 if (ImGuiMCP::Button(
                         noPresets ? "Create & preview preset" : "Preview & edit selected")) {
                     OpenEditor();
                 }
                 ImGuiMCP::EndDisabled();
-                if (!canPreview) {
+                if (awaitingHotkey) {
+                    ImGuiMCP::TextDisabled(
+                        "Finish or cancel the edit hotkey change first.");
+                } else if (!canPreview) {
                     ImGuiMCP::TextDisabled("Preview unavailable: %s",
                         feedback ? feedback->message.c_str() : "camera state unavailable");
+                }
+                ImGuiMCP::Separator();
+                const auto editHotkey =
+                    runtime::EditHotkeySettings::GetSingleton()->EditHotkey();
+                const auto editHotkeyName = runtime::EditHotkeyName(editHotkey);
+                ImGuiMCP::Text("Edit hotkey: %s", editHotkeyName.c_str());
+                if (ImGuiMCP::Button(awaitingHotkey ?
+                        "Cancel hotkey change" : "Change edit hotkey")) {
+                    state.awaitingEditHotkey.store(!awaitingHotkey, std::memory_order_release);
+                    state.capturedEditHotkey.store(0, std::memory_order_release);
+                    state.hotkeyMessage.clear();
+                }
+                if (state.awaitingEditHotkey.load(std::memory_order_acquire)) {
+                    ImGuiMCP::TextDisabled("Press a keyboard key. Escape cancels.");
+                }
+                if (!state.hotkeyMessage.empty()) {
+                    ImGuiMCP::TextWrapped("%s", state.hotkeyMessage.c_str());
                 }
 #if defined(SSC_ENABLE_VISIBILITY_DEBUG)
                 ImGuiMCP::Separator();
@@ -505,6 +719,17 @@ namespace ssc::ui
                     ImGuiMCP::End();
                     return;
                 }
+
+                if (state.editHotkeyRequested.exchange(false, std::memory_order_acq_rel)) {
+                    RequestAction(PendingAction::kClose);
+                    if (!state.window->IsOpen.load(std::memory_order_acquire)) {
+                        ImGuiMCP::End();
+                        return;
+                    }
+                }
+                const auto editHotkeyName = runtime::EditHotkeyName(
+                    runtime::EditHotkeySettings::GetSingleton()->EditHotkey());
+                ImGuiMCP::TextDisabled("Press [%s] to close", editHotkeyName.c_str());
 
                 const auto snapshot = runtime::PresetRepository::GetSingleton()->Snapshot();
                 auto* previewService = runtime::PresetPreviewService::GetSingleton();
@@ -668,7 +893,8 @@ namespace ssc::ui
                 }
                 auto* previewService = runtime::PresetPreviewService::GetSingleton();
                 previewService->EndPreviewSession();
-                previewService->ClearPreview();
+                previewService->ClearPreview(state.selectedID);
+                CancelEditHotkeyAssignment();
             }
         }
     }
@@ -692,11 +918,16 @@ namespace ssc::ui
         SKSEMenuFramework::AddSectionItem("Camera Presets", RenderSection);
         state.mainWindow = SKSEMenuFramework::GetMainWindow();
         state.window = SKSEMenuFramework::AddWindow(RenderEditor, kEditorPausesGame);
+        state.toolbarWindow = SKSEMenuFramework::AddWindow(RenderSceneToolbar, false);
+        state.toolbarVisibility = SKSEMenuFramework::AddHudElement(UpdateSceneToolbarVisibility);
+        state.hotkeyInput = SKSEMenuFramework::AddInputEvent(OnEditHotkeyInput);
         state.event = SKSEMenuFramework::AddEvent(OnMenuEvent, 0.0F);
-        if (!state.mainWindow || !state.window || !state.event) {
+        if (!state.mainWindow || !state.window || !state.toolbarWindow ||
+            !state.toolbarVisibility || !state.hotkeyInput || !state.event) {
             logger::error("SKSE Menu Framework preset editor registration failed");
             return false;
         }
+        state.toolbarWindow->IsOpen.store(false, std::memory_order_release);
         logger::info("SKSE Menu Framework preset editor registered (version {:.2f})", version);
         return true;
     }
@@ -706,6 +937,12 @@ namespace ssc::ui
         if (state.window) {
             state.window->IsOpen.store(false, std::memory_order_release);
         }
+        if (state.toolbarWindow) {
+            state.toolbarWindow->IsOpen.store(false, std::memory_order_release);
+        }
+        CancelEditHotkeyAssignment();
+        state.ownedEditHotkey.store(0, std::memory_order_release);
+        state.editHotkeyRequested.store(false, std::memory_order_release);
         auto* previewService = runtime::PresetPreviewService::GetSingleton();
         previewService->EndPreviewSession();
         previewService->ClearPreview();

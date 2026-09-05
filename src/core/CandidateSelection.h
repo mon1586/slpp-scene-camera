@@ -12,6 +12,10 @@ namespace ssc::core
     class CandidateSelector
     {
     public:
+        [[nodiscard]] std::optional<std::string> SelectInitial(
+            std::span<const CameraCandidateVisibility> a_candidates,
+            std::string_view a_preferredPresetID = {}) const;
+
         [[nodiscard]] std::optional<std::string> Step(
             std::span<const CameraCandidateVisibility> a_candidates,
             std::string_view a_currentPresetID,

@@ -57,6 +57,8 @@ set(SSC_SOURCES
     src/runtime/CameraOutput.h
     src/runtime/CameraPoseAdapter.cpp
     src/runtime/CameraPoseAdapter.h
+    src/runtime/EditHotkeySettings.cpp
+    src/runtime/EditHotkeySettings.h
     src/runtime/PresetRepository.cpp
     src/runtime/PresetRepository.h
     src/runtime/PresetPreviewService.cpp
@@ -193,6 +195,8 @@ if(SSC_BUILD_TESTS)
         src/core/CameraPose.cpp
         src/core/CameraPose.h
         src/core/SceneAnchor.h
+        src/runtime/EditHotkeySettings.cpp
+        src/runtime/EditHotkeySettings.h
         src/runtime/IPresetProvider.h
         src/runtime/PresetPreviewService.cpp
         src/runtime/PresetPreviewService.h
@@ -242,5 +246,61 @@ if(SSC_BUILD_TESTS)
     add_test(
         NAME SexlabSceneCamera.VisibilityEvaluation
         COMMAND SexlabSceneCameraVisibilityEvaluationTests
+    )
+
+    add_executable(
+        SexlabSceneCameraFlowTests
+        tests/SceneCameraFlowTests.cpp
+        src/SceneCamera.cpp
+        src/SceneCamera.h
+        src/SceneSession.h
+        src/core/CameraPose.cpp
+        src/core/CameraPose.h
+        src/core/CandidateSelection.cpp
+        src/core/CandidateSelection.h
+        src/core/SceneAnchor.cpp
+        src/core/SceneAnchor.h
+        src/core/VisibilityEvaluation.cpp
+        src/core/VisibilityEvaluation.h
+        src/runtime/CameraPoseAdapter.cpp
+        src/runtime/CameraPoseAdapter.h
+        src/runtime/ICameraControl.h
+        src/runtime/IDebugVisualization.h
+        src/runtime/IPresetProvider.h
+        src/runtime/IVisibilityProbe.h
+        src/runtime/IRuntimeClient.h
+        src/runtime/ISceneSource.h
+        src/runtime/PresetPreviewService.cpp
+        src/runtime/PresetPreviewService.h
+        src/runtime/RuntimeTypes.h
+        src/runtime/SceneEvent.h
+        src/runtime/SceneKey.h
+    )
+    target_include_directories(SexlabSceneCameraFlowTests PRIVATE src)
+    target_link_libraries(
+        SexlabSceneCameraFlowTests
+        PRIVATE
+            CommonLibSSE::CommonLibSSE
+    )
+    target_compile_definitions(
+        SexlabSceneCameraFlowTests
+        PRIVATE
+            WIN32_LEAN_AND_MEAN
+            NOMINMAX
+    )
+    target_precompile_headers(SexlabSceneCameraFlowTests PRIVATE src/pch.h)
+    if(MSVC)
+        target_compile_options(
+            SexlabSceneCameraFlowTests
+            PRIVATE
+                /EHsc
+                /permissive-
+                /W4
+                /Zc:preprocessor
+        )
+    endif()
+    add_test(
+        NAME SexlabSceneCamera.SceneCameraFlow
+        COMMAND SexlabSceneCameraFlowTests
     )
 endif()

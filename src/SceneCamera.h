@@ -64,7 +64,7 @@ namespace ssc
             std::size_t& a_rayCount);
         [[nodiscard]] bool EvaluatePreviewVisibility(
             const runtime::PresetPreviewRequest& a_request);
-        [[nodiscard]] bool EvaluateVisibility();
+        [[nodiscard]] bool EvaluateVisibility(std::string_view a_preferredPresetID = {});
         [[nodiscard]] bool SelectPresetStep(int a_direction);
         [[nodiscard]] bool ReleaseCamera(std::string_view a_reason);
         void PublishPreviewFeedback(

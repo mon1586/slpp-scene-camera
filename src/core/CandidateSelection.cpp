@@ -1,7 +1,31 @@
 #include "core/CandidateSelection.h"
 
+#include <algorithm>
+
 namespace ssc::core
 {
+    std::optional<std::string> CandidateSelector::SelectInitial(
+        std::span<const CameraCandidateVisibility> a_candidates,
+        std::string_view a_preferredPresetID) const
+    {
+        if (!a_preferredPresetID.empty()) {
+            const auto preferred = std::ranges::find_if(
+                a_candidates,
+                [&](const auto& a_candidate) {
+                    return a_candidate.presetID == a_preferredPresetID;
+                });
+            if (preferred != a_candidates.end()) {
+                return preferred->presetID;
+            }
+        }
+
+        const auto firstUsable = std::ranges::find_if(
+            a_candidates,
+            [](const auto& a_candidate) { return a_candidate.usable; });
+        return firstUsable != a_candidates.end() ?
+            std::optional{ firstUsable->presetID } : std::nullopt;
+    }
+
     std::optional<std::string> CandidateSelector::Step(
         std::span<const CameraCandidateVisibility> a_candidates,
         std::string_view a_currentPresetID,

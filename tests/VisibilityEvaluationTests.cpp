@@ -125,6 +125,22 @@ int main()
     candidates[3].presetID = "good-tie";
     candidates[3].usable = true;
     passed &= Check(
+        selector.SelectInitial(candidates) ==
+            std::optional<std::string>{ "good-first" },
+        "initial selection uses the first usable candidate without a preference");
+    passed &= Check(
+        selector.SelectInitial(candidates, "lower-preferred") ==
+            std::optional<std::string>{ "lower-preferred" },
+        "selection keeps an edited preset when it remains usable");
+    passed &= Check(
+        selector.SelectInitial(candidates, "blocked") ==
+            std::optional<std::string>{ "blocked" },
+        "an explicitly edited preset remains selected when it is unusable");
+    passed &= Check(
+        selector.SelectInitial(candidates, "missing") ==
+            std::optional<std::string>{ "good-first" },
+        "selection falls back only when the edited preset no longer exists");
+    passed &= Check(
         selector.Step(candidates, "good-first", 1) ==
             std::optional<std::string>{ "lower-preferred" },
         "forward selection advances through usable candidates");

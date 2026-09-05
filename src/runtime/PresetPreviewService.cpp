@@ -20,14 +20,15 @@ namespace ssc::runtime
         return revision;
     }
 
-    void PresetPreviewService::ClearPreview() noexcept
+    void PresetPreviewService::ClearPreview(std::string a_resumePresetID) noexcept
     {
         auto current = request_.load(std::memory_order_acquire);
         while (current && current->transform) {
             std::shared_ptr<const PresetPreviewRequest> cleared;
             try {
                 cleared = std::make_shared<const PresetPreviewRequest>(
-                    PresetPreviewRequest{ NextRevision(), std::nullopt, {} });
+                    PresetPreviewRequest{
+                        NextRevision(), std::nullopt, a_resumePresetID });
             } catch (...) {
                 std::shared_ptr<const PresetPreviewRequest> empty;
                 static_cast<void>(request_.compare_exchange_strong(

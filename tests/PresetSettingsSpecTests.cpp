@@ -1,4 +1,5 @@
 #include "core/CameraPose.h"
+#include "runtime/EditHotkeySettings.h"
 #include "runtime/PresetPreviewService.h"
 #include "runtime/PresetRepository.h"
 #include "ui/PresetEditorPolicy.h"
@@ -7,6 +8,8 @@
 #include <cmath>
 #include <filesystem>
 #include <iostream>
+#include <limits>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -239,6 +242,132 @@ int main()
         ssc::core::CandidateFailureReason::kParticipantNotVisible;
     blockedCandidate.participants.resize(2);
     visibilitySnapshot.candidates.push_back(blockedCandidate);
+    visibilitySnapshot.selectedPresetID = "usable";
+
+    auto toolbarEvaluation =
+        std::make_shared<const ssc::core::VisibilityEvaluationSnapshot>(visibilitySnapshot);
+    const PresetPreviewFeedback toolbarFeedback{
+        true, true, true, 0, defaults, "Scene camera active", toolbarEvaluation };
+    const auto currentPresetID = ssc::ui::CurrentPresetID(&toolbarFeedback);
+    passed &= Check(currentPresetID && *currentPresetID == "usable",
+        "scene toolbar identifies the preset currently applied to the camera");
+    passed &= Check(ssc::ui::ShouldShowSceneToolbar(&toolbarFeedback, false, false),
+        "scene toolbar remains visible during an active player scene");
+    passed &= Check(!ssc::ui::ShouldShowSceneToolbar(&toolbarFeedback, true, false),
+        "scene toolbar hides while the preset editor owns the preview session");
+    passed &= Check(!ssc::ui::ShouldShowSceneToolbar(&toolbarFeedback, false, true),
+        "scene toolbar hides behind a blocking menu");
+    passed &= Check(ssc::ui::CanEditCurrentPreset(&toolbarFeedback),
+        "scene toolbar can edit the preset currently applied to the camera");
+    passed &= Check(ssc::ui::CanStartDashboardPreview(&toolbarFeedback, false),
+        "dashboard preview can start outside hotkey assignment");
+    passed &= Check(!ssc::ui::CanStartDashboardPreview(&toolbarFeedback, true),
+        "dashboard preview cannot start during hotkey assignment");
+    passed &= Check(ssc::ui::ShouldHandleEditHotkey(
+        ssc::runtime::kDefaultEditHotkey,
+        ssc::runtime::kDefaultEditHotkey,
+        false,
+        false,
+        &toolbarFeedback),
+        "the edit hotkey is captured when the current preset can be edited");
+    passed &= Check(!ssc::ui::ShouldHandleEditHotkey(
+        0x41,
+        ssc::runtime::kDefaultEditHotkey,
+        false,
+        false,
+        &toolbarFeedback),
+        "unrelated keyboard input is not captured by the edit hotkey");
+    passed &= Check(!ssc::ui::ShouldHandleEditHotkey(
+        ssc::runtime::kDefaultEditHotkey,
+        ssc::runtime::kDefaultEditHotkey,
+        false,
+        true,
+        &toolbarFeedback),
+        "the edit hotkey is not captured behind another blocking window");
+    passed &= Check(!ssc::ui::CanOpenCurrentPresetEditor(&toolbarFeedback, true),
+        "a queued edit request cannot open behind another blocking window");
+
+    const auto assignedDown = ssc::ui::DecideEditHotkeyInput(
+        ssc::ui::EditHotkeyButtonPhase::kDown,
+        0x41,
+        ssc::runtime::kDefaultEditHotkey,
+        ssc::runtime::kEscapeKeyboardKey,
+        0,
+        true,
+        false);
+    passed &= Check(assignedDown.consume && assignedDown.finishAssignment &&
+        !assignedDown.cancelAssignment && assignedDown.capturedKey == 0x41 &&
+        assignedDown.ownedKey == 0x41,
+        "hotkey assignment captures the next key-down as one owned gesture");
+    const auto assignedHeld = ssc::ui::DecideEditHotkeyInput(
+        ssc::ui::EditHotkeyButtonPhase::kHeld,
+        0x41,
+        ssc::runtime::kDefaultEditHotkey,
+        ssc::runtime::kEscapeKeyboardKey,
+        assignedDown.ownedKey,
+        false,
+        false);
+    passed &= Check(assignedHeld.consume && !assignedHeld.toggleEditor &&
+        assignedHeld.ownedKey == 0x41,
+        "the held phase of an assigned key remains captured");
+    const auto assignedUp = ssc::ui::DecideEditHotkeyInput(
+        ssc::ui::EditHotkeyButtonPhase::kUp,
+        0x41,
+        ssc::runtime::kDefaultEditHotkey,
+        ssc::runtime::kEscapeKeyboardKey,
+        assignedHeld.ownedKey,
+        false,
+        false);
+    passed &= Check(assignedUp.consume && assignedUp.ownedKey == 0,
+        "the release phase is captured and then releases gesture ownership");
+    const auto escapeAssignment = ssc::ui::DecideEditHotkeyInput(
+        ssc::ui::EditHotkeyButtonPhase::kDown,
+        ssc::runtime::kEscapeKeyboardKey,
+        ssc::runtime::kDefaultEditHotkey,
+        ssc::runtime::kEscapeKeyboardKey,
+        0,
+        true,
+        false);
+    passed &= Check(escapeAssignment.consume && escapeAssignment.finishAssignment &&
+        escapeAssignment.cancelAssignment && escapeAssignment.capturedKey == 0,
+        "Escape cancels hotkey assignment without assigning itself");
+    const auto editDown = ssc::ui::DecideEditHotkeyInput(
+        ssc::ui::EditHotkeyButtonPhase::kDown,
+        ssc::runtime::kDefaultEditHotkey,
+        ssc::runtime::kDefaultEditHotkey,
+        ssc::runtime::kEscapeKeyboardKey,
+        0,
+        false,
+        true);
+    passed &= Check(editDown.consume && editDown.toggleEditor &&
+        editDown.ownedKey == ssc::runtime::kDefaultEditHotkey,
+        "the edit hotkey toggles once and owns its complete gesture");
+
+    auto noSelectionEvaluation = visibilitySnapshot;
+    noSelectionEvaluation.selectedPresetID.reset();
+    auto noSelectionSnapshot =
+        std::make_shared<const ssc::core::VisibilityEvaluationSnapshot>(noSelectionEvaluation);
+    const PresetPreviewFeedback noSelectionFeedback{
+        true, false, true, 0, std::nullopt, "No usable preset", noSelectionSnapshot };
+    passed &= Check(ssc::ui::ShouldShowSceneToolbar(
+        &noSelectionFeedback, false, false),
+        "scene toolbar reports an active scene even when no preset is selected");
+    passed &= Check(!ssc::ui::CanEditCurrentPreset(&noSelectionFeedback),
+        "scene toolbar disables Edit when no preset is applied");
+    passed &= Check(!ssc::ui::ShouldHandleEditHotkey(
+        ssc::runtime::kDefaultEditHotkey,
+        ssc::runtime::kDefaultEditHotkey,
+        false,
+        false,
+        &noSelectionFeedback),
+        "the edit hotkey passes through when no preset is applied");
+    passed &= Check(ssc::ui::ShouldHandleEditHotkey(
+        ssc::runtime::kDefaultEditHotkey,
+        ssc::runtime::kDefaultEditHotkey,
+        true,
+        true,
+        nullptr),
+        "the edit hotkey remains available to close the editor");
 
     const auto usableSummary = ssc::ui::SummarizePresetForScene(
         &visibilitySnapshot, "usable");
@@ -314,6 +443,29 @@ int main()
         repository.Snapshot()->front().id == "recovered",
         "the recovered preset becomes the saved selection source");
     static_cast<void>(std::filesystem::remove(presetPath, ignored));
+
+    const auto hotkeyPath = TemporaryPresetPath();
+    static_cast<void>(std::filesystem::remove(hotkeyPath, ignored));
+    ssc::runtime::EditHotkeySettings hotkeySettings;
+    passed &= Check(hotkeySettings.LoadFromFile(hotkeyPath).succeeded &&
+        hotkeySettings.EditHotkey() == ssc::runtime::kDefaultEditHotkey,
+        "a missing settings file uses F8 as the edit hotkey");
+    constexpr std::uint32_t alternateHotkey = 0x41;
+    passed &= Check(hotkeySettings.SetEditHotkey(alternateHotkey).succeeded &&
+        hotkeySettings.EditHotkey() == alternateHotkey,
+        "a changed edit hotkey is saved and becomes active");
+    ssc::runtime::EditHotkeySettings reloadedHotkeySettings;
+    passed &= Check(reloadedHotkeySettings.LoadFromFile(hotkeyPath).succeeded &&
+        reloadedHotkeySettings.EditHotkey() == alternateHotkey,
+        "the changed edit hotkey survives a settings reload");
+    passed &= Check(!reloadedHotkeySettings.SetEditHotkey(
+        ssc::runtime::kEscapeKeyboardKey).succeeded &&
+        reloadedHotkeySettings.EditHotkey() == alternateHotkey,
+        "Escape cancels assignment instead of replacing the edit hotkey");
+    passed &= Check(!ssc::runtime::EditHotkeyName(
+        ssc::runtime::kDefaultEditHotkey).empty(),
+        "the toolbar can display the assigned edit hotkey name");
+    static_cast<void>(std::filesystem::remove(hotkeyPath, ignored));
 
     if (!passed) {
         return 1;
