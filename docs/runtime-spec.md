@@ -26,7 +26,7 @@ SexLab P+が送るSKSE `ModCallbackEvent`を購読し、次の未接頭辞イベ
 
 Runtime通知は、送信元QuestのForm IDとP+ thread IDを組み合わせたscene keyを持つ。
 
-- 送信元は`SexLab.esm`で定義されたQuestに限定する。
+- 送信元は`SexLab.esm`で定義されたQuestに限定する。プラグインファイル名の大文字小文字は区別しない。
 - thread IDは`strArg`の整数文字列から取得する。
 - 互換入力として、有限で`int32`範囲内の`numArg`も受け付ける。
 - event名、送信元、thread IDのいずれかが不正な入力は通知しない。

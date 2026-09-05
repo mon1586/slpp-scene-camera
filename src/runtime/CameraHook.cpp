@@ -109,20 +109,47 @@ namespace ssc::runtime
     {
         auto* tasks = SKSE::GetTaskInterface();
         if (!tasks) {
-            logger::error("Ignoring scene event: SKSE task interface is unavailable");
+            logger::error(
+                "Ignoring scene event {} {:08X}/{}: SKSE task interface is unavailable",
+                SceneEventTypeName(a_event.type),
+                a_event.key.sourceID,
+                a_event.key.instanceID);
             return;
         }
 
         const auto generation = eventGeneration_.load(std::memory_order_acquire);
+        logger::info(
+            "Scene event queued: type={} key={:08X}/{} generation={}",
+            SceneEventTypeName(a_event.type),
+            a_event.key.sourceID,
+            a_event.key.instanceID,
+            generation);
         tasks->AddTask([a_event, generation] {
             try {
                 if (generation != eventGeneration_.load(std::memory_order_acquire)) {
+                    logger::info(
+                        "Discarding queued scene event {} {:08X}/{}: lifecycle generation changed from {} to {}",
+                        SceneEventTypeName(a_event.type),
+                        a_event.key.sourceID,
+                        a_event.key.instanceID,
+                        generation,
+                        eventGeneration_.load(std::memory_order_acquire));
                     return;
                 }
 
+                logger::info(
+                    "Scene event task started: type={} key={:08X}/{} generation={}",
+                    SceneEventTypeName(a_event.type),
+                    a_event.key.sourceID,
+                    a_event.key.instanceID,
+                    generation);
                 auto* client = client_;
                 if (!client) {
-                    logger::error("Ignoring scene event: runtime client is unavailable");
+                    logger::error(
+                        "Ignoring scene event {} {:08X}/{}: runtime client is unavailable",
+                        SceneEventTypeName(a_event.type),
+                        a_event.key.sourceID,
+                        a_event.key.instanceID);
                     return;
                 }
                 const auto isStartEvent = a_event.type == SceneEventType::kAnimationStarting ||
@@ -135,14 +162,31 @@ namespace ssc::runtime
                         return;
                     }
                     preparedEvent.participants = sceneSource->CollectParticipants(preparedEvent.key);
+                    logger::info(
+                        "Scene participants collected for {:08X}/{}: count={}, player={}, truncated={}",
+                        preparedEvent.key.sourceID,
+                        preparedEvent.key.instanceID,
+                        preparedEvent.participants.Count(),
+                        preparedEvent.participants.ContainsPlayer() ? "yes" : "no",
+                        preparedEvent.participants.WasTruncated() ? "yes" : "no");
                 }
 
                 const auto installState = installState_.load(std::memory_order_acquire);
                 if (installState == InstallState::kFailed) {
+                    logger::error(
+                        "Ignoring scene event {} {:08X}/{}: camera update hook installation previously failed",
+                        SceneEventTypeName(preparedEvent.type),
+                        preparedEvent.key.sourceID,
+                        preparedEvent.key.instanceID);
                     return;
                 }
                 if (installState == InstallState::kNotInstalled) {
                     if (!isStartEvent) {
+                        logger::info(
+                            "Ignoring scene event {} {:08X}/{} before camera update hook installation",
+                            SceneEventTypeName(preparedEvent.type),
+                            preparedEvent.key.sourceID,
+                            preparedEvent.key.instanceID);
                         return;
                     }
                     if (!preparedEvent.participants.ContainsPlayer()) {
@@ -159,8 +203,18 @@ namespace ssc::runtime
                 }
 
                 if (generation != eventGeneration_.load(std::memory_order_acquire)) {
+                    logger::info(
+                        "Discarding prepared scene event {} {:08X}/{}: lifecycle generation changed",
+                        SceneEventTypeName(preparedEvent.type),
+                        preparedEvent.key.sourceID,
+                        preparedEvent.key.instanceID);
                     return;
                 }
+                logger::info(
+                    "Scene event delivered to procedure layer: type={} key={:08X}/{}",
+                    SceneEventTypeName(preparedEvent.type),
+                    preparedEvent.key.sourceID,
+                    preparedEvent.key.instanceID);
                 client->HandleSceneEvent(preparedEvent);
             } catch (const std::exception& exception) {
                 try {

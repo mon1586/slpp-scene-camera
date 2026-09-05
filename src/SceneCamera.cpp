@@ -704,6 +704,7 @@ namespace ssc
                 PublishPreviewFeedback(false, std::string{ reason });
                 return false;
             }
+            logger::info("Scene camera acquisition preflight passed; requesting SmoothCam control");
             if (!cameraControl_->Acquire()) {
                 logger::warn("SmoothCam camera-control acquisition failed");
                 PublishPreviewFeedback(false, "SmoothCam camera-control acquisition failed");

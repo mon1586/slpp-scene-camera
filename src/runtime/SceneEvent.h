@@ -15,6 +15,25 @@ namespace ssc::runtime
         kAnimationEnd,
     };
 
+    [[nodiscard]] constexpr std::string_view SceneEventTypeName(
+        SceneEventType a_type) noexcept
+    {
+        switch (a_type) {
+        case SceneEventType::kAnimationStarting:
+            return "AnimationStarting"sv;
+        case SceneEventType::kAnimationStart:
+            return "AnimationStart"sv;
+        case SceneEventType::kAnimationChange:
+            return "AnimationChange"sv;
+        case SceneEventType::kAnimationEnding:
+            return "AnimationEnding"sv;
+        case SceneEventType::kAnimationEnd:
+            return "AnimationEnd"sv;
+        default:
+            return "Unknown"sv;
+        }
+    }
+
     class SceneParticipantSnapshot
     {
     public:

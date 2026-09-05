@@ -69,6 +69,7 @@ set(SSC_SOURCES
     src/runtime/ISceneSource.h
     src/runtime/PluginRuntime.cpp
     src/runtime/PluginRuntime.h
+    src/runtime/PluginIdentity.h
     src/runtime/HavokVisibilityProbe.cpp
     src/runtime/HavokVisibilityProbe.h
     src/runtime/SceneEvent.h
@@ -162,6 +163,7 @@ if(SSC_BUILD_TESTS)
         src/core/SceneAnchor.h
         src/runtime/CameraPoseAdapter.cpp
         src/runtime/CameraPoseAdapter.h
+        src/runtime/PluginIdentity.h
         src/runtime/PresetRepository.cpp
         src/runtime/PresetRepository.h
         src/runtime/PresetPreviewService.cpp

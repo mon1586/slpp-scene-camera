@@ -2,6 +2,7 @@
 #include "core/CameraPose.h"
 #include "core/SceneAnchor.h"
 #include "runtime/CameraPoseAdapter.h"
+#include "runtime/PluginIdentity.h"
 #include "runtime/PresetPreviewService.h"
 #include "runtime/PresetRepository.h"
 
@@ -79,12 +80,29 @@ namespace
 int main()
 {
     using ssc::SceneSession;
+    using ssc::runtime::PluginFilenameEquals;
     using ssc::runtime::SceneKey;
 
     const SceneKey first{ 0x01001234, 7 };
     const SceneKey second{ 0x02005678, 8 };
     SceneSession session;
     bool passed = true;
+
+    passed &= Check(
+        PluginFilenameEquals("SexLab.esm", "SexLab.esm"),
+        "plugin filename identity accepts exact spelling");
+    passed &= Check(
+        PluginFilenameEquals("sexlab.esm", "SexLab.esm"),
+        "plugin filename identity ignores ASCII case");
+    passed &= Check(
+        PluginFilenameEquals("SEXLAB.ESM", "SexLab.esm"),
+        "plugin filename identity accepts uppercase spelling");
+    passed &= Check(
+        !PluginFilenameEquals("SexLab.esp", "SexLab.esm"),
+        "plugin filename identity rejects a different extension");
+    passed &= Check(
+        !PluginFilenameEquals("Other.esm", "SexLab.esm"),
+        "plugin filename identity rejects a different plugin");
 
     passed &= Check(session.IsIdle(), "new session is idle");
     passed &= Check(session.Prepare(first), "idle session accepts preparation");

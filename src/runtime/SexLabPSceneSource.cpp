@@ -1,4 +1,5 @@
 #include "runtime/SexLabPSceneSource.h"
+#include "runtime/PluginIdentity.h"
 #include "runtime/SceneParticipantSnapshotStorage.h"
 
 namespace ssc::runtime
@@ -76,11 +77,20 @@ namespace ssc::runtime
             return static_cast<std::int32_t>(std::lround(a_event.numArg));
         }
 
-        [[nodiscard]] bool IsSexLabSender(const RE::TESForm* a_sender) noexcept
+        [[nodiscard]] const RE::TESQuest* AsQuest(const RE::TESForm* a_sender) noexcept
         {
-            const auto* quest = a_sender ? skyrim_cast<const RE::TESQuest*>(a_sender) : nullptr;
-            const auto* definingFile = quest ? quest->GetFile(0) : nullptr;
-            return definingFile && definingFile->GetFilename() == "SexLab.esm"sv;
+            return a_sender ? skyrim_cast<const RE::TESQuest*>(a_sender) : nullptr;
+        }
+
+        [[nodiscard]] std::string_view DefiningFileName(const RE::TESQuest* a_quest) noexcept
+        {
+            const auto* definingFile = a_quest ? a_quest->GetFile(0) : nullptr;
+            return definingFile ? definingFile->GetFilename() : "<none>"sv;
+        }
+
+        [[nodiscard]] bool LooksLikeSceneEvent(std::string_view a_name) noexcept
+        {
+            return a_name.find("Animation"sv) != std::string_view::npos;
         }
     }
 
@@ -293,30 +303,75 @@ namespace ssc::runtime
         }
 
         try {
-            const auto eventKind = ParseEvent(a_event->eventName.c_str());
+            const auto* rawEventName = a_event->eventName.c_str();
+            const auto eventName = rawEventName ? std::string_view{ rawEventName } : std::string_view{};
+            const auto* quest = AsQuest(a_event->sender);
+            const auto senderID = a_event->sender ? a_event->sender->GetFormID() : 0;
+            const auto definingFile = DefiningFileName(quest);
+            const auto* rawStrArg = a_event->strArg.c_str();
+            const auto strArg = rawStrArg ? std::string_view{ rawStrArg } : std::string_view{};
+
+            static std::atomic_bool firstCallbackObserved{ false };
+            if (!firstCallbackObserved.exchange(true, std::memory_order_relaxed)) {
+                logger::info(
+                    "First SKSE ModCallbackEvent observed: event='{}' sender={:08X} file='{}'",
+                    eventName,
+                    senderID,
+                    definingFile);
+            }
+
+            const auto eventKind = ParseEvent(eventName);
             if (!eventKind) {
+                if (LooksLikeSceneEvent(eventName)) {
+                    logger::warn(
+                        "Ignoring unrecognized animation callback '{}' sender={:08X} file='{}' strArg='{}' numArg={}",
+                        eventName,
+                        senderID,
+                        definingFile,
+                        strArg,
+                        a_event->numArg);
+                }
                 return RE::BSEventNotifyControl::kContinue;
             }
 
-            if (!IsSexLabSender(a_event->sender)) {
-                logger::debug("Ignoring shared ModCallbackEvent '{}': sender is not a SexLab.esm quest",
-                    a_event->eventName.c_str());
+            logger::info(
+                "Scene callback received: event='{}' sender={:08X} file='{}' strArg='{}' numArg={}",
+                eventName,
+                senderID,
+                definingFile,
+                strArg,
+                a_event->numArg);
+
+            if (!quest || !PluginFilenameEquals(definingFile, "SexLab.esm"sv)) {
+                logger::warn(
+                    "Ignoring scene callback '{}': sender {:08X} is not a quest defined by SexLab.esm (file='{}')",
+                    eventName,
+                    senderID,
+                    definingFile);
                 return RE::BSEventNotifyControl::kContinue;
             }
 
-            const auto sourceID = a_event->sender->GetFormID();
-            logger::debug("SexLab callback '{}' source={:08X} strArg='{}' numArg={}",
-                a_event->eventName.c_str(), sourceID, a_event->strArg.c_str(), a_event->numArg);
+            const auto sourceID = quest->GetFormID();
 
             const auto instanceID = ParseInstanceID(*a_event);
             if (!instanceID) {
                 logger::warn("Ignoring SexLab event with invalid instance ID payload (strArg='{}', numArg={})",
-                    a_event->strArg.c_str(), a_event->numArg);
+                    strArg, a_event->numArg);
                 return RE::BSEventNotifyControl::kContinue;
             }
 
             if (handler_) {
+                logger::info(
+                    "Scene callback accepted: type={} key={:08X}/{}; forwarding to game task",
+                    SceneEventTypeName(*eventKind),
+                    sourceID,
+                    *instanceID);
                 handler_({ *eventKind, { sourceID, *instanceID }, {} });
+            } else {
+                logger::error(
+                    "Ignoring accepted scene callback {:08X}/{}: event handler is unavailable",
+                    sourceID,
+                    *instanceID);
             }
         } catch (const std::exception& exception) {
             try {
