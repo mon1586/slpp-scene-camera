@@ -274,13 +274,15 @@ int main()
         passed &= CheckNear(Determinant(forwardYPose->basis), 1.0F,
             "camera basis is right-handed");
 
-        const auto runtimePose = ssc::runtime::ToRuntimeCameraPose(*forwardYPose);
+        const auto runtimePose = ssc::runtime::ToRuntimeCameraPose(*forwardYPose, -12.5F);
         passed &= CheckNear(runtimePose.rotation.entries[0][0], forwardYPose->basis.viewForward.x,
             "runtime rotation column 0 stores view-forward X");
         passed &= CheckNear(runtimePose.rotation.entries[1][1], forwardYPose->basis.up.y,
             "runtime rotation column 1 stores camera-up Y");
         passed &= CheckNear(runtimePose.rotation.entries[2][2], forwardYPose->basis.right.z,
             "runtime rotation column 2 stores camera-right Z");
+        passed &= CheckNear(runtimePose.fovOffsetDegrees, -12.5F,
+            "runtime camera pose carries the preset FOV offset");
 
     }
 
@@ -404,6 +406,8 @@ int main()
             "legacy offset migration keeps vertical framing centered");
         passed &= CheckNear((*validSnapshot)[0].transform.orbit.distance, expectedDistance,
             "legacy offset migration retains camera distance");
+        passed &= CheckNear((*validSnapshot)[0].transform.fovOffsetDegrees, 0.0F,
+            "legacy schema migration keeps the current FOV");
         const auto migratedPose = poseCalculator.Evaluate(
             SceneAnchor{ { 0.0F, 0.0F, 0.0F }, { 0.0F, 1.0F, 0.0F } },
             CameraRig{
@@ -475,6 +479,53 @@ int main()
     }
     RemoveFile(version2Path);
 
+    const auto version3Path = NextTemporaryPath();
+    passed &= Check(WriteText(version3Path, R"json({
+        "schemaVersion": 3,
+        "presets": [
+            {
+                "id": "version-3",
+                "framingOffset": { "right": 5, "up": 25 },
+                "orbit": { "yawDegrees": 15, "pitchDegrees": 5, "distance": 180 }
+            }
+        ]
+    })json"), "version 3 migration fixture can be written");
+    PresetRepository version3Repository;
+    const auto version3Load = version3Repository.LoadFromFile(version3Path);
+    passed &= Check(version3Load.succeeded && version3Load.presetCount == 1,
+        "version 3 schema migrates successfully");
+    if (version3Load.succeeded) {
+        passed &= CheckNear(
+            version3Repository.Snapshot()->front().transform.fovOffsetDegrees,
+            0.0F,
+            "version 3 schema migrates with no FOV change");
+    }
+    RemoveFile(version3Path);
+
+    const auto version4Path = NextTemporaryPath();
+    passed &= Check(WriteText(version4Path, R"json({
+        "schemaVersion": 4,
+        "presets": [
+            {
+                "id": "version-4",
+                "framingOffset": { "right": 0, "up": 60 },
+                "orbit": { "yawDegrees": 0, "pitchDegrees": 10, "distance": 200 },
+                "fovOffsetDegrees": -15
+            }
+        ]
+    })json"), "version 4 FOV fixture can be written");
+    PresetRepository version4Repository;
+    const auto version4Load = version4Repository.LoadFromFile(version4Path);
+    passed &= Check(version4Load.succeeded && version4Load.presetCount == 1,
+        "version 4 schema loads successfully");
+    if (version4Load.succeeded) {
+        passed &= CheckNear(
+            version4Repository.Snapshot()->front().transform.fovOffsetDegrees,
+            -15.0F,
+            "version 4 schema retains the FOV offset");
+    }
+    RemoveFile(version4Path);
+
     passed &= Check(repository.Create({
         "wide",
         { { 25.0F, 100.0F }, { 30.0F, 10.0F, 350.0F } },
@@ -496,12 +547,14 @@ int main()
 
     passed &= Check(repository.Update(
         "default",
-        { { 20.0F, 80.0F }, { 45.0F, -15.0F, 240.0F } }).succeeded,
+        { { 20.0F, 80.0F }, { 45.0F, -15.0F, 240.0F }, 20.0F }).succeeded,
         "update persists an existing preset");
     passed &= CheckNear(repository.Snapshot()->front().transform.framingOffset.right, 20.0F,
         "update publishes the changed framing offset");
     passed &= CheckNear(repository.Snapshot()->front().transform.orbit.yawDegrees, 45.0F,
         "update publishes the changed orbit");
+    passed &= CheckNear(repository.Snapshot()->front().transform.fovOffsetDegrees, 20.0F,
+        "update publishes the changed FOV offset");
     passed &= Check(!repository.Update(
         "missing",
         { {}, { 0.0F, 0.0F, 100.0F } }).succeeded,
@@ -529,6 +582,10 @@ int main()
             (*persistedReader.Snapshot())[0].transform.orbit.yawDegrees,
             45.0F,
             "updated orbit survives reload");
+        passed &= CheckNear(
+            (*persistedReader.Snapshot())[0].transform.fovOffsetDegrees,
+            20.0F,
+            "updated FOV offset survives reload");
         passed &= Check((*persistedReader.Snapshot())[1].id == "wide",
             "created preset survives reload");
     }
@@ -582,9 +639,9 @@ int main()
     RemoveFile(corruptRecoveryPath);
     RemoveFile(corruptBackupPath);
 
-    const std::array<std::pair<std::string_view, std::string_view>, 13> invalidDocuments{{
+    const std::array<std::pair<std::string_view, std::string_view>, 16> invalidDocuments{{
         { "broken JSON", R"json({ "schemaVersion": 1, "presets": [)json" },
-        { "unknown schema version", R"json({ "schemaVersion": 4, "presets": [] })json" },
+        { "unknown schema version", R"json({ "schemaVersion": 5, "presets": [] })json" },
         { "missing required field", R"json({ "schemaVersion": 1, "presets": [
             { "id": "x", "offset": { "right": 0, "forward": -10 } }
         ] })json" },
@@ -619,6 +676,20 @@ int main()
         { "missing v3 framing member", R"json({ "schemaVersion": 3, "presets": [
             { "id": "x", "framingOffset": { "right": 0 },
               "orbit": { "yawDegrees": 0, "pitchDegrees": 0, "distance": 100 } }
+        ] })json" },
+        { "missing v4 FOV offset", R"json({ "schemaVersion": 4, "presets": [
+            { "id": "x", "framingOffset": { "right": 0, "up": 0 },
+              "orbit": { "yawDegrees": 0, "pitchDegrees": 0, "distance": 100 } }
+        ] })json" },
+        { "v4 FOV offset outside range", R"json({ "schemaVersion": 4, "presets": [
+            { "id": "x", "framingOffset": { "right": 0, "up": 0 },
+              "orbit": { "yawDegrees": 0, "pitchDegrees": 0, "distance": 100 },
+              "fovOffsetDegrees": 161 }
+        ] })json" },
+        { "v4 FOV offset wrong type", R"json({ "schemaVersion": 4, "presets": [
+            { "id": "x", "framingOffset": { "right": 0, "up": 0 },
+              "orbit": { "yawDegrees": 0, "pitchDegrees": 0, "distance": 100 },
+              "fovOffsetDegrees": "wide" }
         ] })json" },
     }};
     for (const auto& [description, document] : invalidDocuments) {

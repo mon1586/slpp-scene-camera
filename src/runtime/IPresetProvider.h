@@ -23,6 +23,7 @@ namespace ssc::runtime
     {
         PresetFramingOffset framingOffset;
         PresetOrbit orbit;
+        float fovOffsetDegrees{ 0.0F };
     };
 
     struct CameraPreset

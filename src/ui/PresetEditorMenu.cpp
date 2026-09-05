@@ -71,7 +71,8 @@ namespace ssc::ui
                    a_left.framingOffset.up == a_right.framingOffset.up &&
                    a_left.orbit.yawDegrees == a_right.orbit.yawDegrees &&
                    a_left.orbit.pitchDegrees == a_right.orbit.pitchDegrees &&
-                   a_left.orbit.distance == a_right.orbit.distance;
+                   a_left.orbit.distance == a_right.orbit.distance &&
+                   a_left.fovOffsetDegrees == a_right.fovOffsetDegrees;
         }
 
         void SetIDBuffer(std::string_view a_id)
@@ -802,6 +803,11 @@ namespace ssc::ui
                 transformChanged |= ImGuiMCP::DragFloat(
                     "Distance", &state.draftTransform.orbit.distance,
                     1.0F, kMinimumDistance, kMaximumDistance, "%.1f",
+                    ImGuiMCP::ImGuiSliderFlags_AlwaysClamp);
+                ImGuiMCP::TextDisabled("Relative to the normal third-person FOV");
+                transformChanged |= ImGuiMCP::DragFloat(
+                    "FOV Offset", &state.draftTransform.fovOffsetDegrees,
+                    0.25F, kMinimumFOVOffsetDegrees, kMaximumFOVOffsetDegrees, "%.1f deg",
                     ImGuiMCP::ImGuiSliderFlags_AlwaysClamp);
                 if (transformChanged) {
                     state.dirty = state.creating ||

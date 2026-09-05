@@ -232,6 +232,13 @@ namespace ssc::runtime
             return CameraReleaseResult::kNoOwnership;
         }
 
+        try {
+            output_.ResetFOVOffset();
+        } catch (...) {
+            logger::error("Could not reset the scene FOV offset before releasing camera control");
+            return CameraReleaseResult::kFailed;
+        }
+
         const auto goalResult = api->SendToGoalPosition(
             pluginHandle, true, false, RE::PlayerCharacter::GetSingleton());
         logger::info("SmoothCam SendToGoalPosition(true) -> {}", ResultName(goalResult));
@@ -267,6 +274,11 @@ namespace ssc::runtime
             return true;
         }
 
+        try {
+            output_.ResetFOVOffset();
+        } catch (...) {
+            return false;
+        }
         const auto result = api->ReleaseCameraControl(pluginHandle);
         if (result == SmoothCamAPI::APIResult::OK || result == SmoothCamAPI::APIResult::NotOwner) {
             ownsCamera_.store(false, std::memory_order_release);

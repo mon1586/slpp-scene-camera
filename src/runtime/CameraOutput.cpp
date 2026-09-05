@@ -1,9 +1,21 @@
 #include "runtime/CameraOutput.h"
 
+#include "runtime/CameraFOV.h"
+
 namespace ssc::runtime
 {
     namespace
     {
+        [[nodiscard]] REL::Relocation<float*>& FOVOffset()
+        {
+            static REL::Relocation<float*> offset{
+                // SmoothCam uses this engine FOV-offset global. CommonLib expects
+                // IDs in (SE, AE) order.
+                RELOCATION_ID(527997, 414942)
+            };
+            return offset;
+        }
+
         void UpdateWorldToScreen(RE::NiCamera* a_camera)
         {
             using UpdateWorldToScreen_t = void (*)(RE::NiCamera*);
@@ -64,6 +76,28 @@ namespace ssc::runtime
         return nullptr;
     }
 
+    bool CameraOutput::ApplyFOVOffset(float a_offsetDegrees)
+    {
+        auto* camera = RE::PlayerCamera::GetSingleton();
+        if (!camera) {
+            return false;
+        }
+
+        const auto baseFOV = camera->GetRuntimeData2().worldFOV;
+        const auto resolvedOffset = ResolveFOVOffset(baseFOV, a_offsetDegrees);
+        if (!resolvedOffset) {
+            return false;
+        }
+
+        *FOVOffset() = *resolvedOffset;
+        return true;
+    }
+
+    void CameraOutput::ResetFOVOffset()
+    {
+        *FOVOffset() = 0.0F;
+    }
+
     CameraApplyResult CameraOutput::Apply(const CameraPose& a_pose)
     {
         auto* camera = RE::PlayerCamera::GetSingleton();
@@ -101,6 +135,9 @@ namespace ssc::runtime
             thirdPerson->translation = position;
         }
 
+        if (!ApplyFOVOffset(a_pose.fovOffsetDegrees)) {
+            return CameraApplyResult::kInvalidFOV;
+        }
         UpdateWorldToScreen(niCamera);
         return CameraApplyResult::kApplied;
     }

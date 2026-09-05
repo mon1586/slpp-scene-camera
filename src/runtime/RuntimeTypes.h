@@ -24,6 +24,7 @@ namespace ssc::runtime
     {
         Vec3 position;
         RotationMatrix rotation;
+        float fovOffsetDegrees{ 0.0F };
     };
 
     struct SceneAnchorSamples

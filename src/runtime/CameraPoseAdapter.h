@@ -5,5 +5,7 @@
 
 namespace ssc::runtime
 {
-    [[nodiscard]] CameraPose ToRuntimeCameraPose(const core::CameraPose& a_pose) noexcept;
+    [[nodiscard]] CameraPose ToRuntimeCameraPose(
+        const core::CameraPose& a_pose,
+        float a_fovOffsetDegrees = 0.0F) noexcept;
 }

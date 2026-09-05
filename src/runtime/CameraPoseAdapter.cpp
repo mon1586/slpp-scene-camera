@@ -2,7 +2,9 @@
 
 namespace ssc::runtime
 {
-    CameraPose ToRuntimeCameraPose(const core::CameraPose& a_pose) noexcept
+    CameraPose ToRuntimeCameraPose(
+        const core::CameraPose& a_pose,
+        float a_fovOffsetDegrees) noexcept
     {
         const auto& basis = a_pose.basis;
         CameraPose result;
@@ -12,6 +14,7 @@ namespace ssc::runtime
             { basis.viewForward.y, basis.up.y, basis.right.y },
             { basis.viewForward.z, basis.up.z, basis.right.z },
         }};
+        result.fovOffsetDegrees = a_fovOffsetDegrees;
         return result;
     }
 }

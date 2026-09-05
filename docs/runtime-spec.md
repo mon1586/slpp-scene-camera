@@ -72,12 +72,14 @@ camera-state update hookは、最初のプレイヤー参加scene開始時に一
 
 カメラ制御はSmoothCamの公開APIを通して取得・更新・解放する。
 
-- Runtimeは`src`から渡されたcamera poseだけを反映する。
+- Runtimeは`src`から渡されたcamera poseとFOV offsetだけを反映する。
 - Runtime自身はcamera poseやアンカー位置を決めない。
+- FOV offsetは通常の三人称FOVを基準に適用し、実FOVを`10..170 degree`へ制限する。
 - 解放時は必要な復帰処理を行ってからSmoothCamへ所有権を返す。
+- 所有中に解放する場合はFOV offsetを解除してからSmoothCamへ所有権を返す。
 - 所有権を取得していない場合、解放要求は外部状態を変更しない。
 
-現在はcamera pose生成が未実装のため、アンカー計算だけではカメラ制御を取得しない。
+有効なcamera poseとFOV offsetを準備できない場合はカメラ制御を取得しない。
 
 ## デバッグ可視化
 

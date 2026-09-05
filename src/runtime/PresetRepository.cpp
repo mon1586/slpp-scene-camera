@@ -206,8 +206,8 @@ namespace ssc::runtime
                 throw std::runtime_error("schemaVersion must be an integer");
             }
             const auto version = schemaVersion.get<std::int64_t>();
-            if (version != 1 && version != 2 && version != 3) {
-                throw std::runtime_error("schemaVersion must be integer 1, 2, or 3");
+            if (version != 1 && version != 2 && version != 3 && version != 4) {
+                throw std::runtime_error("schemaVersion must be integer 1, 2, 3, or 4");
             }
 
             const auto& presets = RequireMember(document, "presets", "top level");
@@ -265,6 +265,11 @@ namespace ssc::runtime
                     transform.orbit = ParseOrbit(
                         RequireMember(preset, "orbit", context),
                         context + ".orbit");
+                    if (version == 4) {
+                        transform.fovOffsetDegrees = ReadFiniteFloat(
+                            RequireMember(preset, "fovOffsetDegrees", context),
+                            context + ".fovOffsetDegrees");
+                    }
                 }
 
                 CameraPreset parsedPreset{ std::move(id), transform };
@@ -291,10 +296,11 @@ namespace ssc::runtime
                         { "pitchDegrees", preset.transform.orbit.pitchDegrees },
                         { "distance", preset.transform.orbit.distance },
                     } },
+                    { "fovOffsetDegrees", preset.transform.fovOffsetDegrees },
                 });
             }
             return Json{
-                { "schemaVersion", 3 },
+                { "schemaVersion", 4 },
                 { "presets", std::move(presets) },
             };
         }
@@ -386,6 +392,13 @@ namespace ssc::runtime
         }
         if (orbit.distance <= kMinimumCameraDistance) {
             return "preset orbit distance must be greater than zero";
+        }
+        if (!std::isfinite(a_transform.fovOffsetDegrees)) {
+            return "preset FOV offset must be finite";
+        }
+        if (a_transform.fovOffsetDegrees < -160.0F ||
+            a_transform.fovOffsetDegrees > 160.0F) {
+            return "preset FOV offset must be between -160 and 160 degrees";
         }
         return {};
     }

@@ -35,6 +35,8 @@ namespace ssc
                 return "wrong SmoothCam API thread"sv;
             case runtime::CameraApplyResult::kUpdatePathUnavailable:
                 return "camera update hook unavailable"sv;
+            case runtime::CameraApplyResult::kInvalidFOV:
+                return "invalid camera FOV"sv;
             default:
                 return "unknown failure"sv;
             }
@@ -712,7 +714,9 @@ namespace ssc
             }
         }
 
-        const auto runtimePose = runtime::ToRuntimeCameraPose(*corePose);
+        const auto runtimePose = runtime::ToRuntimeCameraPose(
+            *corePose,
+            a_transform.fovOffsetDegrees);
         const auto applyResult = cameraControl_->Apply(runtimePose);
         if (applyResult != runtime::CameraApplyResult::kApplied) {
             logger::error("Could not apply camera transform: {}", ApplyResultName(applyResult));

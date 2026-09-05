@@ -14,6 +14,7 @@ namespace ssc::ui
     inline constexpr runtime::PresetTransform kNewPresetTransform{
         { 0.0F, 60.0F },
         { 0.0F, 0.0F, 200.0F },
+        0.0F,
     };
 
     inline constexpr float kMinimumYawDegrees = -180.0F;
@@ -22,6 +23,8 @@ namespace ssc::ui
     inline constexpr float kMaximumPitchDegrees = 89.9F;
     inline constexpr float kMinimumDistance = 0.1F;
     inline constexpr float kMaximumDistance = 100000.0F;
+    inline constexpr float kMinimumFOVOffsetDegrees = -160.0F;
+    inline constexpr float kMaximumFOVOffsetDegrees = 160.0F;
 
     enum class PresetSceneStatus
     {

@@ -12,6 +12,7 @@ namespace ssc::runtime
         kNotOwner,
         kWrongThread,
         kUpdatePathUnavailable,
+        kInvalidFOV,
     };
 
     enum class CameraReleaseResult

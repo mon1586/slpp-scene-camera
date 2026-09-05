@@ -51,6 +51,7 @@ set(SSC_SOURCES
     src/core/VisibilityEvaluation.h
     src/runtime/CameraHook.cpp
     src/runtime/CameraHook.h
+    src/runtime/CameraFOV.h
     src/runtime/CameraInput.cpp
     src/runtime/CameraInput.h
     src/runtime/CameraOutput.cpp
@@ -165,6 +166,7 @@ if(SSC_BUILD_TESTS)
         src/core/SceneAnchor.h
         src/runtime/CameraPoseAdapter.cpp
         src/runtime/CameraPoseAdapter.h
+        src/runtime/CameraFOV.h
         src/runtime/PluginIdentity.h
         src/runtime/PresetRepository.cpp
         src/runtime/PresetRepository.h

@@ -1,4 +1,5 @@
 #include "core/CameraPose.h"
+#include "runtime/CameraFOV.h"
 #include "runtime/EditHotkeySettings.h"
 #include "runtime/PresetPreviewService.h"
 #include "runtime/PresetRepository.h"
@@ -88,6 +89,8 @@ int main()
         "New preset starts with Pitch 0");
     passed &= CheckNear(defaults.orbit.distance, 200.0F,
         "New preset starts with Distance 200");
+    passed &= CheckNear(defaults.fovOffsetDegrees, 0.0F,
+        "New preset starts with FOV Offset 0");
     passed &= CheckNear(ssc::ui::kMinimumYawDegrees, -180.0F,
         "editor yaw minimum is -180 degrees");
     passed &= CheckNear(ssc::ui::kMaximumYawDegrees, 180.0F,
@@ -100,8 +103,43 @@ int main()
         "editor distance minimum is 0.1 Skyrim unit");
     passed &= CheckNear(ssc::ui::kMaximumDistance, 100000.0F,
         "editor distance maximum is 100000 Skyrim units");
+    passed &= CheckNear(ssc::ui::kMinimumFOVOffsetDegrees, -160.0F,
+        "editor FOV offset minimum is -160 degrees");
+    passed &= CheckNear(ssc::ui::kMaximumFOVOffsetDegrees, 160.0F,
+        "editor FOV offset maximum is 160 degrees");
     passed &= Check(ssc::runtime::ValidatePresetTransform(defaults).empty(),
         "New preset defaults are valid preview values");
+    auto invalidFOV = defaults;
+    invalidFOV.fovOffsetDegrees = 160.1F;
+    passed &= Check(!ssc::runtime::ValidatePresetTransform(invalidFOV).empty(),
+        "FOV offsets outside the editor range are rejected");
+    invalidFOV.fovOffsetDegrees = std::numeric_limits<float>::quiet_NaN();
+    passed &= Check(!ssc::runtime::ValidatePresetTransform(invalidFOV).empty(),
+        "non-finite FOV offsets are rejected");
+    const auto unchangedFOVOffset = ssc::runtime::ResolveFOVOffset(70.0F, -15.0F);
+    passed &= Check(unchangedFOVOffset.has_value(),
+        "a finite FOV offset resolves against the normal FOV");
+    if (unchangedFOVOffset) {
+        passed &= CheckNear(*unchangedFOVOffset, -15.0F,
+            "an in-range requested FOV offset is retained");
+    }
+    const auto minimumFOVOffset = ssc::runtime::ResolveFOVOffset(70.0F, -100.0F);
+    passed &= Check(minimumFOVOffset.has_value(),
+        "an excessively narrow FOV offset resolves");
+    if (minimumFOVOffset) {
+        passed &= CheckNear(*minimumFOVOffset, -60.0F,
+            "the applied FOV cannot fall below 10 degrees");
+    }
+    const auto maximumFOVOffset = ssc::runtime::ResolveFOVOffset(70.0F, 120.0F);
+    passed &= Check(maximumFOVOffset.has_value(),
+        "an excessively wide FOV offset resolves");
+    if (maximumFOVOffset) {
+        passed &= CheckNear(*maximumFOVOffset, 100.0F,
+            "the applied FOV cannot exceed 170 degrees");
+    }
+    passed &= Check(!ssc::runtime::ResolveFOVOffset(
+        std::numeric_limits<float>::infinity(), 0.0F),
+        "a non-finite normal FOV is rejected");
 
     const SceneAnchor anchor{ { 0.0F, 0.0F, 0.0F }, { 0.0F, 1.0F, 0.0F } };
     CameraPoseCalculator calculator;
@@ -184,7 +222,8 @@ int main()
             "larger Distance moves away from the framing center");
     }
 
-    PresetTransform combined{ { 25.0F, 40.0F }, { 55.0F, 25.0F, 250.0F } };
+    PresetTransform combined{
+        { 25.0F, 40.0F }, { 55.0F, 25.0F, 250.0F }, -12.5F };
     const auto combinedPose = calculator.Evaluate(anchor, ToRig(combined));
     passed &= Check(combinedPose.has_value(),
         "Pan, Yaw, Pitch, and Distance combine into a camera pose");
