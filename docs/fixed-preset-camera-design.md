@@ -6,7 +6,7 @@
 
 特定のファイルから固定カメラ構図を読み込み、プレイヤー参加シーンのアンカー確定後にSmoothCamからカメラ制御を取得して、画面相対のframing offsetを保ったままアンカーをorbitする位置から映す。
 
-この設計の対象は、ファイル入力からゲーム内カメラ出力までの最小経路である。CRUDと複数プリセットのUI操作は後続設計で実装済みだが、raycast、clearance、補間は含めない。
+本書の保存形式と構図の定義は現在の仕様として使用する。シーン全体の動作は[`scene-camera-procedure.md`](scene-camera-procedure.md)、可視性とA/D選択は[`clearance-design.md`](clearance-design.md)、編集操作は[`preset-settings-spec.md`](preset-settings-spec.md)に従う。失敗時の動作もシーンカメラ手続きへ集約する。
 
 ## 最小成立条件
 
@@ -20,6 +20,8 @@
 6. SmoothCamがカメラ制御を渡せる。
 
 いずれかが失敗した場合はカメラを取得せず、通常のSmoothCam表示を維持する。
+
+通常表示の初期選択では可視性仕様の使用可能条件も満たす必要がある。編集用previewは、可視性を理由に禁止しない。
 
 ## 固定ファイル
 
@@ -59,7 +61,7 @@ SKSE Menuに表示する設定と操作の仕様は[`preset-settings-spec.md`](p
 ```
 
 - `schemaVersion`は必須とし、`1`、`2`、`3`、`4`を読み込める。書き込みは常に`4`とする。
-- `presets`は配列とする。最初の縦切りでは先頭の有効な1件だけを使用するが、loaderは全件を読み込む。
+- `presets`は配列とし、全件を読み込む。通常表示では最初の使用可能候補を初期選択し、その後のA/Dと選択維持は可視性仕様に従う。
 - `id`は空でないUTF-8文字列とし、ファイル内で一意にする。後続CRUDでも同じIDを使用する。
 - `framingOffset.right`は現在のcamera right方向、`framingOffset.up`は現在のcamera up方向にframing centerを移動する量である。有限な数値とし、単位はSkyrim unitとする。
 - `orbit.yawDegrees`は注視中心を回る水平角で、`-180`から`180`度とする。アンカーforwardはプレイヤーActorの水平前方の逆を指すため、`0`度ではプレイヤー正面側、`-180`または`180`度では背面側にカメラを置く。
@@ -133,129 +135,20 @@ viewForward = normalize(framingCenter - cameraPosition)
 
 ### src
 
-- アンカー確定後に先頭のプリセットを取得する。
+- アンカー確定後に可視性仕様に従って初期プリセットを選ぶ。
 - Coreへpose計算を要求する。
 - pose生成成功後だけRuntimeへカメラ取得と反映を要求する。
 - シーンとカメラ所有権のライフサイクルを管理する。
 
-## 実行手順
+## カメラ利用時の契約
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Game as Skyrim / SKSE
-    participant Src as src<br/>Scene Controller
-    participant Runtime as Runtime
-    participant File as presets.json
-    participant Core as Core
-    participant SC as SmoothCam<br/>ICameraControl
-
-    Note over Game,Runtime: 起動時に一度だけ読み込む
-    Game->>Runtime: kDataLoaded
-    Runtime->>File: ファイルを開いてJSONを読み込む
-    File-->>Runtime: JSON
-    Runtime->>Runtime: schemaと全プリセットを検証
-    alt 読み込み・検証成功
-        Runtime->>Runtime: immutable snapshotを保持
-    else ファイル・JSON・schemaが不正
-        Runtime->>Runtime: エラーを記録し、空snapshotを保持
-    end
-
-    Note over Game,SC: AnimationStart後の初回camera update
-    Game->>Src: camera update
-    Src->>Src: プレイヤーの身体中心からアンカーを確定
-    Src->>Runtime: snapshotの先頭プリセットを要求
-    Runtime-->>Src: preset または none
-    alt アンカー確定済み、かつpresetあり
-        Src->>Core: アンカーとframing offset・orbitからCameraPoseを生成
-        Core->>Core: world位置と注視回転を計算・検証
-        Core-->>Src: CameraPose または失敗
-        alt pose生成成功
-            Src->>Runtime: カメラ制御をAcquire
-            Runtime->>SC: RequestControl
-            SC-->>Runtime: 取得成功 または失敗
-            alt Acquire成功
-                Runtime-->>Src: 所有権取得済み
-                Src->>Runtime: CameraPoseをApply
-                Runtime->>SC: SetCameraPosition / SetCameraRotation
-                alt 初回Apply成功
-                    Src->>Src: scene poseと所有状態を保持
-                else 初回Apply失敗
-                    Src->>Runtime: 復帰・解放
-                    Runtime->>SC: Reset / ReleaseControl
-                    Src->>Src: scene poseと所有状態を破棄
-                end
-            else Acquire失敗
-                Runtime-->>Src: 取得失敗
-                Note over Src,SC: カメラを変更せずSmoothCam表示を維持
-            end
-        else pose生成失敗
-            Note over Src,SC: AcquireせずSmoothCam表示を維持
-        end
-    else アンカー未確定、またはpresetなし
-        Note over Src,SC: AcquireせずSmoothCam表示を維持
-    end
-
-    loop 以後のcamera update
-        Game->>Src: camera update
-        Src->>Runtime: 所有権を確認
-        Runtime->>SC: HasControl
-        SC-->>Runtime: 所有中 または喪失
-        alt 所有中
-            Src->>Runtime: 保持中のCameraPoseをApply
-            Runtime->>SC: SetCameraPosition / SetCameraRotation
-        else 所有権喪失
-            Src->>Src: 所有状態とscene poseを破棄
-        end
-    end
-
-    Note over Game,SC: AnimationChange
-    Game->>Src: AnimationChange
-    Src->>Src: 新アンカー待機中も現在poseと所有権を維持
-    Game->>Src: 新アンカー確定後のcamera update
-    Src->>Core: 同じpresetでCameraPoseを再生成
-    Core-->>Src: CameraPose または失敗
-    alt 再生成成功
-        Src->>Runtime: 新しいCameraPoseをApply
-        Runtime->>SC: SetCameraPosition / SetCameraRotation
-        Src->>Src: scene poseを更新
-    else 再生成失敗
-        Src->>Runtime: 復帰・解放
-        Runtime->>SC: Reset / ReleaseControl
-        Src->>Src: scene poseと所有状態を破棄
-    end
-
-    Note over Game,SC: AnimationEnding / AnimationEnd / reset / watchdog / 異常
-    Game->>Src: 終了またはリセット通知
-    Src->>Runtime: 復帰・解放
-    Runtime->>SC: Reset / ReleaseControl
-    Src->>Src: scene poseと所有状態を破棄
-```
-
-SmoothCamの取得・反映・復帰・解放は新しく作り直さず、POCで実機確認済みの`ICameraControl`経路を使用する。
-
-## 失敗時の扱い
-
-| 失敗 | 動作 |
-| --- | --- |
-| ファイルなし・読み取り失敗 | エラーログを出し、プリセット0件として継続する |
-| JSONまたはschema不正 | 理由をログへ出し、ファイル全体を不採用にする |
-| プリセット0件 | 対象シーンでもカメラを取得しない |
-| pose計算失敗 | カメラを取得せず、そのシーンの処理を終了する |
-| SmoothCam取得失敗 | カメラを変更せず、そのシーンの処理を終了する |
-| 初回Apply失敗 | 取得済みなら直ちに復帰・解放する |
-| 所有権喪失 | 以後Applyせず、内部所有状態とscene poseを破棄する |
-| AnimationChange後のpose再計算失敗 | 現在poseを維持せず、復帰・解放する |
-
-## 初版で扱わないもの
-
-- `A` / `D`によるプリセット切り替え。
-- プリセットの作成、更新、削除、reload。
-- 個別ファイル、フォルダ探索、優先順位、上書き。
-- rollのファイル指定。
-- camera poseの補間。
-- LOS、raycast、clearance、有効候補の選択。
-- 保存データまたはSKSE co-saveへの永続化。
+- 読み込み成功と、現在のシーンでの使用可能性を分ける。データが正常でも可視性条件で初期選択されない場合がある。
+- 通常表示の初期選択・A/D・選択維持は[可視性仕様](clearance-design.md)に従う。
+- 編集用previewは[設定仕様](preset-settings-spec.md)に従う。使用不能なプリセットも編集できる。
+- 入力欠落、構図生成失敗、取得拒否、表示失敗、所有権喪失は[シーンカメラ手続き](scene-camera-procedure.md)の失敗表に従う。
+- ファイルの初回読込失敗は空の一覧として扱い、Reload失敗は最後の正常な一覧を維持する。いずれもDLL自体のロード失敗にはしない。
+- シーンカメラの終了時には、所有している場合にFOV offsetを解除して制御を返す。
+- ファイルの自動監視、複数ファイルによる上書き、roll、プリセット間の補間は提供しない。
 
 ## テスト
 
@@ -285,7 +178,7 @@ SmoothCamの取得・反映・復帰・解放は新しく作り直さず、POC�
 
 1. 固定ファイルを配置してプレイヤー参加シーンを開始する。
 2. デバッグモードのHUDアンカーがプレイヤーActorの水平前方の逆を向き、Yaw `0`が正面側、Yaw `±180`が背面側になることを確認する。
-3. 人型とクリーチャーを含むシーンで、骨格名に依存せず参加者の身体中心を取得できることを確認する。
+3. 人型とクリーチャーを含むシーンでも、他参加者の骨格に影響されずプレイヤーの腰・胸からアンカーを取得できることを確認する。プレイヤーの必要部位を取得できなければ新しいアンカーを生成しない。
 4. アンカー確定後にカメラが指定orbit位置へ移動し、framing centerを向くことを確認する。
 5. プレイヤーの移動と姿勢変化にアンカーとカメラが追従し、取得不能なフレームでは直前の構図を維持することを確認する。
 6. FOV offsetの正負で画角が広がる、狭まること、および実FOVが`10..170 degree`を越えないことを確認する。

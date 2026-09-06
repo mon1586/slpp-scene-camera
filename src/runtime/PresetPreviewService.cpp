@@ -69,6 +69,12 @@ namespace ssc::runtime
         return previewSessionActive_.load(std::memory_order_acquire);
     }
 
+    void PresetPreviewService::InvalidatePreviewSession() noexcept
+    {
+        EndPreviewSession();
+        request_.store(nullptr, std::memory_order_release);
+    }
+
     void PresetPreviewService::PublishFeedback(PresetPreviewFeedback a_feedback) noexcept
     {
         try {

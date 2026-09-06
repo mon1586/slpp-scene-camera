@@ -152,6 +152,11 @@ namespace
         }
         [[nodiscard]] ssc::runtime::CameraReleaseResult Release() override
         {
+            ++releaseCount_;
+            if (releaseFailures_ > 0) {
+                --releaseFailures_;
+                return releaseFailureResult_;
+            }
             if (failNextRelease_) {
                 failNextRelease_ = false;
                 return ssc::runtime::CameraReleaseResult::kFailed;
@@ -161,6 +166,9 @@ namespace
         }
         [[nodiscard]] bool EmergencyRelease() noexcept override
         {
+            if (failEmergencyRelease_) {
+                return false;
+            }
             owns_ = false;
             return true;
         }
@@ -173,6 +181,11 @@ namespace
         [[nodiscard]] std::size_t ApplyCount() const noexcept { return applyCount_; }
 
         bool failNextRelease_{ false };
+        bool failEmergencyRelease_{ false };
+        unsigned releaseFailures_{ 0 };
+        unsigned releaseCount_{ 0 };
+        ssc::runtime::CameraReleaseResult releaseFailureResult_{
+            ssc::runtime::CameraReleaseResult::kFailed };
         unsigned acquireFailures_{ 0 };
         unsigned acquireCount_{ 0 };
 
@@ -929,6 +942,141 @@ int main()
     passed &= Check(!selected() && !dynamicControl.OwnsCamera(),
         "no pre-editor selection restores normal camera despite newly usable presets");
     dynamicCamera.Reset("R1-02 no-selection test");
+
+    // T35/T37: failed termination must only release, including paused updates.
+    for (const auto failure : { ssc::runtime::CameraReleaseResult::kFailed,
+             ssc::runtime::CameraReleaseResult::kWrongThread }) {
+        for (unsigned termination = 0; termination < 3; ++termination) {
+            TestSceneSource stopSource;
+            TestPresetProvider stopPresets({ { "default", defaultTransform } });
+            ssc::runtime::PresetPreviewService stopPreview;
+            TestCameraControl stopControl;
+            TestVisibilityProbe stopProbe;
+            TestDebugVisualization stopDebug;
+            ssc::SceneCamera stopCamera;
+            stopCamera.Configure(stopSource, stopPresets, stopPreview,
+                stopControl, stopProbe, stopDebug);
+            stopCamera.HandleSceneEvent({
+                ssc::runtime::SceneEventType::kAnimationStart, sceneKey, participants });
+            stopCamera.Update(0.016F);
+            stopPreview.BeginPreviewSession();
+            static_cast<void>(stopPreview.SetPreview(alternateTransform, "draft"));
+            stopCamera.Update(0.0F);
+            stopCamera.HandleSceneEvent({
+                ssc::runtime::SceneEventType::kAnimationChange, sceneKey, participants });
+
+            stopControl.releaseFailureResult_ = failure;
+            stopControl.releaseFailures_ = termination == 2 ? 3 : 4;
+            stopControl.failEmergencyRelease_ = termination == 2;
+            if (termination == 0) {
+                stopCamera.HandleSceneEvent({
+                    ssc::runtime::SceneEventType::kAnimationEnd, sceneKey, participants });
+            } else if (termination == 1) {
+                stopCamera.Reset("failed reset regression");
+            } else {
+                stopCamera.EmergencyReset();
+            }
+            passed &= Check(stopControl.OwnsCamera() && stopCamera.NeedsUpdate() &&
+                stopCamera.AllowsUpdateWhilePaused() &&
+                !stopPreview.Feedback()->sceneActive &&
+                !stopPreview.Feedback()->previewApplied &&
+                !stopPreview.PreviewSessionActive() && !stopPreview.Request(),
+                "failed termination locks editing, cancels preview, and keeps release pending");
+
+            const auto stopApplies = stopControl.ApplyCount();
+            const auto stopAcquires = stopControl.acquireCount_;
+            const auto stopTraces = stopProbe.traceCount_;
+            const auto stopAnchors = stopSource.anchorCollectionCount_;
+            const ssc::runtime::SceneKey nextKey{ sceneKey.sourceID, sceneKey.instanceID + 1 };
+            stopCamera.HandleSceneEvent({
+                ssc::runtime::SceneEventType::kAnimationChange, sceneKey, participants });
+            stopCamera.HandleSceneEvent({
+                ssc::runtime::SceneEventType::kAnimationStart, nextKey, participants });
+            stopCamera.RequestPresetStep(1);
+            stopCamera.Update(0.0F);
+            passed &= Check(stopControl.OwnsCamera() &&
+                stopControl.ApplyCount() == stopApplies &&
+                stopControl.acquireCount_ == stopAcquires &&
+                stopProbe.traceCount_ == stopTraces &&
+                stopSource.anchorCollectionCount_ == stopAnchors &&
+                !stopPreview.Feedback()->sceneActive,
+                "release failures cannot evaluate, acquire, apply, or accept a new scene");
+
+            stopCamera.Update(0.0F);
+            passed &= Check(!stopControl.OwnsCamera() && !stopCamera.NeedsUpdate() &&
+                !stopCamera.AllowsUpdateWhilePaused() &&
+                stopControl.releaseCount_ == (termination == 2 ? 4U : 5U),
+                "paused release retry reaches idle without reviving canceled work");
+            stopCamera.HandleSceneEvent({
+                ssc::runtime::SceneEventType::kAnimationStart, nextKey, participants });
+            stopCamera.Update(0.016F);
+            passed &= Check(stopControl.OwnsCamera() &&
+                stopPreview.Feedback()->sceneActive &&
+                stopPreview.Feedback()->currentTransform &&
+                stopPreview.Feedback()->currentTransform->orbit.yawDegrees ==
+                    defaultTransform.orbit.yawDegrees &&
+                !stopPreview.PreviewSessionActive(),
+                "a fresh start uses saved presets without applying the old draft");
+            stopCamera.Reset("termination regression cleanup");
+        }
+    }
+
+    // T36: a queued reset wakes the consumer; it must not issue another reset.
+    {
+        TestSceneSource resetSource;
+        TestPresetProvider resetPresets({ { "default", defaultTransform } });
+        ssc::runtime::PresetPreviewService resetPreview;
+        TestCameraControl resetControl;
+        TestVisibilityProbe resetProbe;
+        TestDebugVisualization resetDebug;
+        ssc::SceneCamera resetCamera;
+        resetCamera.Configure(resetSource, resetPresets, resetPreview,
+            resetControl, resetProbe, resetDebug);
+        resetCamera.HandleSceneEvent({
+            ssc::runtime::SceneEventType::kAnimationStart, sceneKey, participants });
+        resetCamera.Update(0.016F);
+        resetCamera.RequestReset();
+        passed &= Check(resetCamera.AllowsUpdateWhilePaused(),
+            "a reset request alone permits paused release processing");
+        const ssc::runtime::SceneKey nextKey{ sceneKey.sourceID, sceneKey.instanceID + 1 };
+        resetCamera.HandleSceneEvent({
+            ssc::runtime::SceneEventType::kAnimationStart, nextKey, participants });
+        resetCamera.Update(0.016F);
+        const auto releasedBeforeWakeup = resetControl.releaseCount_;
+        const auto appliedBeforeWakeup = resetControl.ApplyCount();
+        ssc::runtime::IRuntimeClient& runtimeClient = resetCamera;
+        passed &= Check(runtimeClient.ProcessPendingReset("delayed reset task") &&
+            runtimeClient.ProcessPendingReset("duplicate reset task") &&
+            resetControl.OwnsCamera() && resetPreview.Feedback()->sceneActive &&
+            resetControl.releaseCount_ == releasedBeforeWakeup &&
+            resetControl.ApplyCount() == appliedBeforeWakeup,
+            "an already consumed reset cannot terminate the next scene");
+        resetCamera.RequestReset();
+        passed &= Check(runtimeClient.ProcessPendingReset("new reset task") &&
+            !resetControl.OwnsCamera() && !resetCamera.NeedsUpdate(),
+            "a new reset remains effective after a stale wakeup");
+
+        // An editor-close request must not cross the scene boundary either.
+        resetCamera.HandleSceneEvent({
+            ssc::runtime::SceneEventType::kAnimationStart, nextKey, participants });
+        resetCamera.Update(0.016F);
+        resetPreview.BeginPreviewSession();
+        static_cast<void>(resetPreview.SetPreview(alternateTransform, "old"));
+        resetCamera.Update(0.0F);
+        resetPreview.EndPreviewSession();
+        resetPreview.ClearPreview("missing-old-preset");
+        resetCamera.Reset("reset with pending editor close");
+        passed &= Check(!resetPreview.Request() && !resetPreview.PreviewSessionActive(),
+            "reset discards both preview and editor-close requests");
+        resetCamera.HandleSceneEvent({
+            ssc::runtime::SceneEventType::kAnimationStart, sceneKey, participants });
+        resetCamera.Update(0.016F);
+        passed &= Check(resetControl.OwnsCamera() &&
+            resetPreview.Feedback()->visibilityEvaluation->selectedPresetID ==
+                std::optional<std::string>{ "default" },
+            "an old editor close cannot change selection or release the next scene");
+        resetCamera.Reset("reset wakeup regression cleanup");
+    }
 
     return passed ? 0 : 1;
 }

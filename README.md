@@ -47,6 +47,8 @@ Install the contents of `dist` under `Data`. The build distributes only the DLL 
 
 ## In-game validation
 
+The [specification coverage checklist](docs/spec-coverage.md) maps states and events, decision rules, invariants, and sequence cases to the design documents, and tracks unresolved specification gaps separately from test results.
+
 1. Start the game with SexLab P+, SmoothCam, SKSE Menu Framework 3.4+, and this mod enabled.
 2. Start a SexLab scene containing the player, open the Camera Presets page, and create and save the first preset if none exists yet.
 3. Confirm the scene toolbar remains visible, names the preset currently shown by the camera, shows `Press [F8] to edit this preset`, and follows every `A` / `D` preset change without taking mouse input.

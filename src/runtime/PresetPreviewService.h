@@ -41,6 +41,7 @@ namespace ssc::runtime
 
         void BeginPreviewSession() noexcept;
         void EndPreviewSession() noexcept;
+        void InvalidatePreviewSession() noexcept;
         [[nodiscard]] bool PreviewSessionActive() const noexcept;
 
         void PublishFeedback(PresetPreviewFeedback a_feedback) noexcept;

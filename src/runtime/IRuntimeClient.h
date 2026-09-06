@@ -15,6 +15,8 @@ namespace ssc::runtime
         virtual void Update(float a_deltaSeconds) = 0;
         virtual void Reset(std::string_view a_reason) = 0;
         virtual void RequestReset() noexcept = 0;
+        // Returns false while release is still pending; consuming an old wakeup is a no-op.
+        [[nodiscard]] virtual bool ProcessPendingReset(std::string_view a_reason) = 0;
         virtual void RequestPresetStep(int a_direction) noexcept = 0;
         virtual void EmergencyReset() noexcept = 0;
     };

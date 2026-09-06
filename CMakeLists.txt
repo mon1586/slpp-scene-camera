@@ -76,6 +76,7 @@ set(SSC_SOURCES
     src/runtime/SceneEvent.h
     src/runtime/SceneParticipantSnapshotStorage.h
     src/runtime/SceneKey.h
+    src/runtime/SceneInstanceID.h
     src/runtime/RuntimeTypes.h
     src/runtime/SexLabPSceneSource.cpp
     src/runtime/SexLabPSceneSource.h
@@ -158,6 +159,7 @@ if(SSC_BUILD_TESTS)
         src/runtime/CameraPoseAdapter.h
         src/runtime/CameraFOV.h
         src/runtime/PluginIdentity.h
+        src/runtime/SceneInstanceID.h
         src/runtime/PresetRepository.cpp
         src/runtime/PresetRepository.h
         src/runtime/PresetPreviewService.cpp

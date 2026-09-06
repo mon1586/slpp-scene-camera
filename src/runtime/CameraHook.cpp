@@ -95,7 +95,7 @@ namespace ssc::runtime
             tasks->AddTask([reason = std::string{ a_reason }] {
                 resetTaskQueued_.store(false, std::memory_order_release);
                 if (auto* runtimeClient = client_) {
-                    runtimeClient->Reset(reason);
+                    static_cast<void>(runtimeClient->ProcessPendingReset(reason));
                 }
             });
         } catch (...) {

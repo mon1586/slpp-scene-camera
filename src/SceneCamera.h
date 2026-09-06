@@ -41,6 +41,7 @@ namespace ssc
         void Update(float a_deltaSeconds) override;
         void Reset(std::string_view a_reason) override;
         void RequestReset() noexcept override;
+        [[nodiscard]] bool ProcessPendingReset(std::string_view a_reason) override;
         void RequestPresetStep(int a_direction) noexcept override;
         void EmergencyReset() noexcept override;
 
@@ -54,7 +55,7 @@ namespace ssc
             const runtime::SceneKey& a_key,
             const runtime::SceneParticipantSnapshot& a_participants);
         void Restore(std::string_view a_reason);
-        void ApplyRequestedReset();
+        void StopSceneWork() noexcept;
         [[nodiscard]] std::optional<runtime::PresetTransform> ResolveTransform(
             const std::shared_ptr<const runtime::PresetPreviewRequest>& a_request) const;
         [[nodiscard]] bool ApplyTransform(

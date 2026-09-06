@@ -82,7 +82,8 @@ namespace ssc
     bool SceneCamera::AllowsUpdateWhilePaused() const noexcept
     {
         const auto debugMode = debugVisualization_ && debugVisualization_->Enabled();
-        return (previewService_ && previewService_->PreviewSessionActive()) ||
+        return resetRequested_.load(std::memory_order_acquire) ||
+               (previewService_ && previewService_->PreviewSessionActive()) ||
                debugResumePending_.load(std::memory_order_acquire) ||
                debugMode != debugModeObserved_;
     }
@@ -134,14 +135,18 @@ namespace ssc
 
     void SceneCamera::OnAnimationStarting(const runtime::SceneEvent& a_event)
     {
-        ApplyRequestedReset();
+        if (!ProcessPendingReset("pending reset"sv)) {
+            return;
+        }
         logger::info("AnimationStarting {:08X}/{}", a_event.key.sourceID, a_event.key.instanceID);
         Prepare(a_event.key, a_event.participants);
     }
 
     void SceneCamera::OnAnimationStart(const runtime::SceneEvent& a_event)
     {
-        ApplyRequestedReset();
+        if (!ProcessPendingReset("pending reset"sv)) {
+            return;
+        }
         logger::info("AnimationStart {:08X}/{}", a_event.key.sourceID, a_event.key.instanceID);
 
         if (session_.IsIdle()) {
@@ -174,7 +179,9 @@ namespace ssc
 
     void SceneCamera::OnAnimationChange(const runtime::SceneEvent& a_event)
     {
-        ApplyRequestedReset();
+        if (!ProcessPendingReset("pending reset"sv)) {
+            return;
+        }
         logger::info("AnimationChange {:08X}/{}", a_event.key.sourceID, a_event.key.instanceID);
 
         if (!session_.IsActive() || !session_.Matches(a_event.key)) {
@@ -194,7 +201,9 @@ namespace ssc
 
     void SceneCamera::OnAnimationEnding(const runtime::SceneEvent& a_event)
     {
-        ApplyRequestedReset();
+        if (!ProcessPendingReset("pending reset"sv)) {
+            return;
+        }
         logger::info("AnimationEnding {:08X}/{}", a_event.key.sourceID, a_event.key.instanceID);
         if (session_.Matches(a_event.key)) {
             Restore("matching AnimationEnding"sv);
@@ -203,7 +212,9 @@ namespace ssc
 
     void SceneCamera::OnAnimationEnd(const runtime::SceneEvent& a_event)
     {
-        ApplyRequestedReset();
+        if (!ProcessPendingReset("pending reset"sv)) {
+            return;
+        }
         logger::info("AnimationEnd {:08X}/{}", a_event.key.sourceID, a_event.key.instanceID);
         if (!session_.Matches(a_event.key)) {
             logger::info("Ignoring stale AnimationEnd {:08X}/{}",
@@ -215,7 +226,9 @@ namespace ssc
 
     void SceneCamera::Update(float a_deltaSeconds)
     {
-        ApplyRequestedReset();
+        if (!ProcessPendingReset("pending reset"sv)) {
+            return;
+        }
         const auto debugMode = debugVisualization_ && debugVisualization_->Enabled();
         const auto debugModeChanged = debugMode != debugModeObserved_;
         if (debugModeChanged) {
@@ -989,17 +1002,12 @@ namespace ssc
     {
         const auto hadSession = !session_.IsIdle();
         const auto hadCameraOwnership = cameraControl_ && cameraControl_->OwnsCamera();
-        const auto hadRuntimeState = hadSession || hadCameraOwnership ||
-            cameraPose_.has_value() || anchor_.has_value();
-        if (!hadRuntimeState) {
-            return;
-        }
+        StopSceneWork();
 
         if (hadCameraOwnership && !ReleaseCamera(a_reason)) {
             return;
         }
         if (hadSession) {
-            session_.BeginRestore();
             logger::info("Discarding scene anchor: {}", a_reason);
         }
         Clear();
@@ -1029,6 +1037,7 @@ namespace ssc
 
     void SceneCamera::EmergencyReset() noexcept
     {
+        StopSceneWork();
         if (cameraControl_ && !cameraControl_->EmergencyRelease()) {
             resetRequested_.store(true, std::memory_order_release);
             return;
@@ -1037,21 +1046,40 @@ namespace ssc
         Clear();
     }
 
-    void SceneCamera::ApplyRequestedReset()
+    bool SceneCamera::ProcessPendingReset(std::string_view a_reason)
     {
-        if (!resetRequested_.exchange(false, std::memory_order_acq_rel)) {
-            return;
+        if (resetRequested_.exchange(false, std::memory_order_acq_rel)) {
+            Restore(a_reason);
         }
+        return !session_.IsRestoring() &&
+               !resetRequested_.load(std::memory_order_acquire);
+    }
 
-        if (cameraControl_ && cameraControl_->OwnsCamera()) {
-            Restore("lifecycle reset"sv);
-        } else {
-            Clear();
+    void SceneCamera::StopSceneWork() noexcept
+    {
+        session_.BeginRestore();
+        sceneEvaluationPending_.store(false, std::memory_order_release);
+        sceneEvaluationReadyAt_ = {};
+        presetSwitchEnabled_.store(false, std::memory_order_release);
+        presetStepRequested_.store(0, std::memory_order_release);
+        debugResumePending_.store(false, std::memory_order_release);
+        debugResumeAttemptsLeft_ = 0;
+        debugResumeDeadline_ = {};
+        debugResumeNextAttempt_ = {};
+        if (previewService_) {
+            previewService_->InvalidatePreviewSession();
         }
+        visibilityEvaluation_.reset();
+        if (debugVisualization_) {
+            debugVisualization_->HideAnchor();
+            debugVisualization_->HideVisibility();
+        }
+        PublishPreviewFeedback(false, "No active player scene");
     }
 
     void SceneCamera::Clear() noexcept
     {
+        StopSceneWork();
         participants_ = {};
         sceneEvaluationPending_.store(false, std::memory_order_release);
         cameraPoseActive_.store(false, std::memory_order_release);

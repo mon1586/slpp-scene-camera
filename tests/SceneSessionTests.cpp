@@ -5,6 +5,7 @@
 #include "runtime/PluginIdentity.h"
 #include "runtime/PresetPreviewService.h"
 #include "runtime/PresetRepository.h"
+#include "runtime/SceneInstanceID.h"
 
 #include <array>
 #include <chrono>
@@ -87,6 +88,48 @@ int main()
     const SceneKey second{ 0x02005678, 8 };
     SceneSession session;
     bool passed = true;
+
+    using ssc::runtime::ParseSceneInstanceID;
+    const auto nan = std::numeric_limits<float>::quiet_NaN();
+    const auto infinity = std::numeric_limits<float>::infinity();
+    struct InstanceIDCase
+    {
+        std::string_view text;
+        float number;
+        std::optional<std::int32_t> expected;
+        std::string_view description;
+    };
+    const std::array instanceIDCases{
+        InstanceIDCase{ "7", 8.0F, 7, "valid string wins over a different numeric ID" },
+        InstanceIDCase{ "7", nan, 7, "valid string does not depend on the fallback" },
+        InstanceIDCase{ "2147483647", 0.0F, 2147483647, "string accepts int32 maximum exactly" },
+        InstanceIDCase{ "-2147483648", 0.0F, std::numeric_limits<std::int32_t>::min(),
+            "string accepts int32 minimum exactly" },
+        InstanceIDCase{ "2147483648", 9.0F, 9, "out-of-range string uses numeric fallback" },
+        InstanceIDCase{ "-2147483649", nan, std::nullopt, "both out-of-range string and invalid number are rejected" },
+        InstanceIDCase{ "", 0.0F, 0, "empty text permits numeric zero" },
+        InstanceIDCase{ "bad", 3.0F, 3, "malformed string preserves compatibility fallback" },
+        InstanceIDCase{ "7tail", nan, std::nullopt, "integer prefix alone is not a valid string ID" },
+        InstanceIDCase{ " 7", nan, std::nullopt, "leading whitespace is not accepted as an integer string" },
+        InstanceIDCase{ "+7", nan, std::nullopt, "leading plus is not accepted as an integer string" },
+        InstanceIDCase{ "", 1.49F, 1, "numeric fraction rounds to nearest integer" },
+        InstanceIDCase{ "", 1.5F, 2, "positive half rounds away from zero" },
+        InstanceIDCase{ "", -1.5F, -2, "negative half rounds away from zero" },
+        InstanceIDCase{ "", -2147483648.0F, std::numeric_limits<std::int32_t>::min(),
+            "numeric int32 minimum is accepted" },
+        InstanceIDCase{ "", std::nextafter(2147483648.0F, 0.0F), 2147483520,
+            "largest representable float below int32 upper boundary is accepted" },
+        InstanceIDCase{ "", 2147483648.0F, std::nullopt,
+            "numeric 2^31 is rejected before integer conversion" },
+        InstanceIDCase{ "", std::nextafter(-2147483648.0F, -infinity), std::nullopt,
+            "float immediately below int32 minimum is rejected" },
+        InstanceIDCase{ "", nan, std::nullopt, "NaN fallback is rejected" },
+        InstanceIDCase{ "", infinity, std::nullopt, "positive infinity fallback is rejected" },
+        InstanceIDCase{ "", -infinity, std::nullopt, "negative infinity fallback is rejected" },
+    };
+    for (const auto& test : instanceIDCases) {
+        passed &= Check(ParseSceneInstanceID(test.text, test.number) == test.expected, test.description);
+    }
 
     passed &= Check(
         PluginFilenameEquals("SexLab.esm", "SexLab.esm"),
