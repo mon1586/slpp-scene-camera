@@ -12,11 +12,18 @@
 #include "core/CandidateSelection.h"
 #include "core/SceneAnchor.h"
 
+#include <functional>
+
 namespace ssc
 {
     class SceneCamera final : public runtime::IRuntimeClient
     {
     public:
+        using Clock = std::chrono::steady_clock;
+        explicit SceneCamera(std::function<Clock::time_point()> a_now = Clock::now) :
+            now_(std::move(a_now))
+        {}
+
         static SceneCamera* GetSingleton() noexcept;
 
         void Configure(
@@ -31,7 +38,7 @@ namespace ssc
         [[nodiscard]] bool AllowsUpdateWhilePaused() const noexcept override;
         void HandleSceneEvent(const runtime::SceneEvent& a_event) override;
 
-        void Update() override;
+        void Update(float a_deltaSeconds) override;
         void Reset(std::string_view a_reason) override;
         void RequestReset() noexcept override;
         void RequestPresetStep(int a_direction) noexcept override;
@@ -56,17 +63,27 @@ namespace ssc
             std::uint64_t a_revision);
         [[nodiscard]] bool ApplyRequestedTransform(
             const std::shared_ptr<const runtime::PresetPreviewRequest>& a_request,
-            bool a_liveEdit);
+            bool a_liveEdit,
+            bool& a_poseApplied);
         [[nodiscard]] core::CameraCandidateVisibility EvaluateVisibilityCandidate(
             std::string a_presetID,
             const runtime::PresetTransform& a_transform,
+            std::size_t& a_rayCount,
+            double* a_traceMilliseconds = nullptr);
+        void MeasureAnchorLOS();
+        [[nodiscard]] core::CameraCandidateVisibility EvaluateVisibilityAtPose(
+            std::string a_presetID,
+            std::optional<core::CameraPose> a_pose,
             const runtime::SceneVisibilitySamples& a_samples,
-            std::size_t& a_rayCount);
+            std::size_t& a_rayCount,
+            double* a_traceMilliseconds);
         [[nodiscard]] bool EvaluatePreviewVisibility(
             const runtime::PresetPreviewRequest& a_request);
         [[nodiscard]] bool EvaluateVisibility(std::string_view a_preferredPresetID = {});
-        [[nodiscard]] bool SelectPresetStep(int a_direction);
-        [[nodiscard]] bool ReleaseCamera(std::string_view a_reason);
+        [[nodiscard]] bool SelectPresetStep(int a_direction, bool& a_poseApplied);
+        [[nodiscard]] bool ReleaseCamera(
+            std::string_view a_reason,
+            bool a_requestResetOnFailure = true);
         void PublishPreviewFeedback(
             bool a_applied,
             std::string a_message,
@@ -84,12 +101,21 @@ namespace ssc
         SceneSession session_;
         runtime::SceneParticipantSnapshot participants_;
         std::chrono::steady_clock::time_point activeSince_{};
-        std::chrono::steady_clock::time_point anchorCaptureReadyAt_{};
+        std::chrono::steady_clock::time_point sceneEvaluationReadyAt_{};
         std::atomic_bool resetRequested_{ false };
         std::atomic_int presetStepRequested_{ 0 };
         std::atomic_bool presetSwitchEnabled_{ false };
-        std::atomic_bool anchorCapturePending_{ false };
+        std::atomic_bool sceneEvaluationPending_{ false };
         std::atomic_bool cameraPoseActive_{ false };
+        bool debugModeObserved_{ false };
+        std::atomic_bool debugResumePending_{ false };
+        Clock::time_point debugResumeDeadline_{};
+        Clock::time_point debugResumeNextAttempt_{};
+        unsigned debugResumeAttemptsLeft_{ 0 };
+        bool initialPresetSelectionDone_{ false };
+        bool anchorInputUnavailable_{ false };
+        float anchorLOSTimeSeconds_{ 0.0F };
+        core::AnchorLOSMetrics anchorLOSMetrics_;
         std::optional<core::SceneAnchor> anchor_;
         std::optional<runtime::CameraPose> cameraPose_;
         std::optional<std::string> activePresetID_;
@@ -99,5 +125,6 @@ namespace ssc
         core::CameraPoseCalculator poseCalculator_;
         core::CandidateSelector candidateSelector_;
         core::VisibilityEvaluator visibilityEvaluator_;
+        std::function<Clock::time_point()> now_;
     };
 }

@@ -168,65 +168,70 @@ int main()
     using ssc::core::Vec3;
     SceneAnchorCalculator anchorCalculator;
 
-    const std::array<Vec3, 2> twoParticipants{{ { 0.0F, 0.0F, 10.0F }, { 10.0F, 0.0F, 20.0F } }};
-    const auto twoPersonAnchor = anchorCalculator.Evaluate({
-        twoParticipants,
-        Vec3{ 0.0F, 1.0F, 0.0F },
+    using ssc::core::SmoothAnchorPosition;
+    const Vec3 smoothingTarget{ 100.0F, -40.0F, 20.0F };
+    const auto halfWay = SmoothAnchorPosition({}, smoothingTarget, 0.15F);
+    passed &= CheckNear(halfWay.x, 50.0F, "anchor closes half the gap in 0.15 seconds");
+    passed &= CheckNear(halfWay.y, -20.0F, "negative coordinates smooth toward the target");
+    passed &= CheckNear(halfWay.z, 10.0F, "anchor height uses the same response");
+    Vec3 at30FPS{};
+    Vec3 at144FPS{};
+    for (int frame = 0; frame < 30; ++frame) {
+        at30FPS = SmoothAnchorPosition(at30FPS, smoothingTarget, 1.0F / 30.0F);
+    }
+    for (int frame = 0; frame < 144; ++frame) {
+        at144FPS = SmoothAnchorPosition(at144FPS, smoothingTarget, 1.0F / 144.0F);
+    }
+    passed &= Check(std::abs(at30FPS.x - at144FPS.x) < 0.001F &&
+        std::abs(at30FPS.y - at144FPS.y) < 0.001F &&
+        std::abs(at30FPS.z - at144FPS.z) < 0.001F,
+        "30 FPS and 144 FPS converge equally over one second");
+    passed &= Check(at30FPS.x > halfWay.x && at30FPS.x <= smoothingTarget.x,
+        "tracking converges without overshooting");
+    for (const auto invalidDelta : { 0.0F, -1.0F,
+             std::numeric_limits<float>::quiet_NaN(),
+             std::numeric_limits<float>::infinity() }) {
+        const auto held = SmoothAnchorPosition(halfWay, smoothingTarget, invalidDelta);
+        passed &= Check(held.x == halfWay.x && held.y == halfWay.y && held.z == halfWay.z,
+            "paused or invalid elapsed time preserves the anchor");
+    }
+
+    const auto bodyCenterAnchor = anchorCalculator.Evaluate({
+        Vec3{ 4.0F, 5.0F, 6.0F },
         Vec3{ 1.0F, 0.0F, 0.0F },
     });
-    passed &= Check(twoPersonAnchor.has_value(), "two participants produce an anchor");
-    if (twoPersonAnchor) {
-        passed &= CheckNear(twoPersonAnchor->position.x, 5.0F, "anchor averages Pelvis X");
-        passed &= CheckNear(twoPersonAnchor->position.y, 0.0F, "anchor averages Pelvis Y");
-        passed &= CheckNear(twoPersonAnchor->position.z, 15.0F, "anchor averages Pelvis Z");
-        passed &= CheckNear(twoPersonAnchor->forward.x, 0.0F,
-            "multi-person forward ignores the player's position around the anchor");
-        passed &= CheckNear(twoPersonAnchor->forward.y, -1.0F,
-            "multi-person forward reverses the player Pelvis forward");
+    passed &= Check(bodyCenterAnchor.has_value(), "player body center produces an anchor");
+    if (bodyCenterAnchor) {
+        passed &= CheckNear(bodyCenterAnchor->position.x, 4.0F, "anchor uses body center X");
+        passed &= CheckNear(bodyCenterAnchor->position.y, 5.0F, "anchor uses body center Y");
+        passed &= CheckNear(bodyCenterAnchor->position.z, 6.0F, "anchor uses body center Z");
+        passed &= CheckNear(bodyCenterAnchor->forward.x, -1.0F,
+            "anchor forward reverses the Actor horizontal forward");
+        passed &= CheckNear(bodyCenterAnchor->forward.y, 0.0F,
+            "anchor forward preserves the Actor horizontal orientation");
     }
 
-    const std::array<Vec3, 1> oneParticipant{{ { 4.0F, 5.0F, 6.0F } }};
-    const auto onePersonAnchor = anchorCalculator.Evaluate({
-        oneParticipant,
-        Vec3{ 4.0F, 0.0F, 7.0F },
-        Vec3{ 0.0F, 1.0F, 0.0F },
-    });
-    passed &= Check(onePersonAnchor.has_value(), "one participant uses Pelvis forward");
-    if (onePersonAnchor) {
-        passed &= CheckNear(onePersonAnchor->forward.x, -1.0F,
-            "one-person forward reverses Pelvis forward");
-        passed &= CheckNear(onePersonAnchor->forward.y, 0.0F,
-            "one-person forward does not use actor yaw when Pelvis forward is valid");
-        passed &= CheckNear(onePersonAnchor->forward.z, 0.0F,
-            "one-person forward removes vertical Pelvis tilt");
-    }
-
-    const std::array<Vec3, 2> degenerateParticipants{{ { 3.0F, 4.0F, 1.0F }, { 3.0F, 4.0F, 9.0F } }};
     const auto degenerateAnchor = anchorCalculator.Evaluate({
-        degenerateParticipants,
+        Vec3{ 3.0F, 4.0F, 5.0F },
         Vec3{ 0.0F, 0.0F, 1.0F },
-        Vec3{ 1.0F, 0.0F, 0.0F },
     });
-    passed &= Check(degenerateAnchor.has_value(), "vertical Pelvis forward uses actor fallback");
-    if (degenerateAnchor) {
-        passed &= CheckNear(degenerateAnchor->forward.x, -1.0F,
-            "actor fallback is reversed for anchor forward");
-    }
+    passed &= Check(!degenerateAnchor.has_value(), "vertical Actor forward is rejected");
 
     const auto maximum = std::numeric_limits<float>::max();
-    const std::array<Vec3, 2> extremeParticipants{{
-        { maximum, maximum, maximum },
-        { maximum, maximum, maximum },
-    }};
     const auto extremeAnchor = anchorCalculator.Evaluate({
-        extremeParticipants,
+        Vec3{ maximum, maximum, maximum },
         Vec3{ 0.0F, 1.0F, 0.0F },
-        std::nullopt,
     });
-    passed &= Check(extremeAnchor.has_value(), "finite extreme coordinates do not overflow the average");
+    passed &= Check(extremeAnchor.has_value(), "finite extreme coordinates produce an anchor");
     if (extremeAnchor) {
         passed &= Check(std::isfinite(extremeAnchor->position.x), "extreme anchor position remains finite");
     }
+
+    const auto invalidPositionAnchor = anchorCalculator.Evaluate({
+        Vec3{ std::numeric_limits<float>::quiet_NaN(), 0.0F, 0.0F },
+        Vec3{ 0.0F, 1.0F, 0.0F },
+    });
+    passed &= Check(!invalidPositionAnchor.has_value(), "non-finite body center is rejected");
 
     using ssc::core::CameraPoseCalculator;
     using ssc::core::CameraRig;

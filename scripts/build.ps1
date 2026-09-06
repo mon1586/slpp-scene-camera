@@ -3,9 +3,7 @@ param(
     [string] $Configuration = 'RelWithDebInfo',
     [string] $BuildDirectory,
     [switch] $SkipTests,
-    [switch] $TestsOnly,
-    [switch] $EnableDebugAnchor,
-    [switch] $EnableVisibilityDebug
+    [switch] $TestsOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -48,8 +46,6 @@ $installedTriplet = Join-Path $BuildDirectory "vcpkg_installed\$triplet"
 $manifestInstall = if (Test-Path -LiteralPath $installedTriplet -PathType Container) { 'OFF' } else { 'ON' }
 $previousCommonLibPrebuilt = $env:COMMONLIB_PREBUILT
 $env:COMMONLIB_PREBUILT = '1'
-$debugAnchor = if ($EnableDebugAnchor) { 'ON' } else { 'OFF' }
-$visibilityDebug = if ($EnableVisibilityDebug) { 'ON' } else { 'OFF' }
 
 try {
     Invoke-Native $cmake @(
@@ -60,9 +56,7 @@ try {
         "-DCMAKE_TOOLCHAIN_FILE=$toolchain",
         "-DVCPKG_TARGET_TRIPLET=$triplet",
         "-DVCPKG_MANIFEST_INSTALL=$manifestInstall",
-        '-DSSC_BUILD_TESTS=ON',
-        "-DSSC_ENABLE_DEBUG_ANCHOR=$debugAnchor",
-        "-DSSC_ENABLE_VISIBILITY_DEBUG=$visibilityDebug"
+        '-DSSC_BUILD_TESTS=ON'
     )
 
     $targets = if ($TestsOnly) {
@@ -101,6 +95,11 @@ try {
         $distDirectory = Join-Path $repoRoot 'dist\SKSE\Plugins'
         New-Item -ItemType Directory -Path $distDirectory -Force | Out-Null
 
+        $legacyPreset = Join-Path $distDirectory 'SexlabSceneCamera\presets.json'
+        if (Test-Path -LiteralPath $legacyPreset -PathType Leaf) {
+            Remove-Item -LiteralPath $legacyPreset -Force
+        }
+
         foreach ($name in @('SexlabSceneCamera.dll', 'SexlabSceneCamera.pdb')) {
             $source = Join-Path $sourceDirectory $name
             if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
@@ -108,11 +107,6 @@ try {
             }
             Copy-Item -LiteralPath $source -Destination (Join-Path $distDirectory $name) -Force
         }
-
-        $presetSource = Join-Path $repoRoot 'data\SKSE\Plugins\SexlabSceneCamera\presets.json'
-        $presetDestination = Join-Path $distDirectory 'SexlabSceneCamera\presets.json'
-        New-Item -ItemType Directory -Path (Split-Path -Parent $presetDestination) -Force | Out-Null
-        Copy-Item -LiteralPath $presetSource -Destination $presetDestination -Force
 
         & (Join-Path $PSScriptRoot 'verify-plugin.ps1') -PluginDirectory $distDirectory
     }

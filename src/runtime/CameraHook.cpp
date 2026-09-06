@@ -452,8 +452,10 @@ namespace ssc::runtime
                 return;
             }
             auto* ui = RE::UI::GetSingleton();
-            if (!ui || !ui->GameIsPaused() || client->AllowsUpdateWhilePaused()) {
-                client->Update();
+            const auto paused = ui && ui->GameIsPaused();
+            if (!paused || client->AllowsUpdateWhilePaused()) {
+                const auto* timer = RE::BSTimer::GetSingleton();
+                client->Update(!paused && timer ? timer->realTimeDelta : 0.0F);
             }
         } catch (const std::exception& exception) {
             try {

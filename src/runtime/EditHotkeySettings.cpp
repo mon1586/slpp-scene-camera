@@ -32,7 +32,8 @@ namespace ssc::runtime
 
         void ReplaceFileTransactionally(
             const std::filesystem::path& a_path,
-            std::uint32_t a_keyCode)
+            std::uint32_t a_keyCode,
+            bool a_debugMode)
         {
             const auto parent = a_path.parent_path();
             if (!parent.empty()) {
@@ -55,7 +56,10 @@ namespace ssc::runtime
                 if (!stream.is_open()) {
                     throw std::runtime_error("temporary hotkey settings file could not be opened");
                 }
-                stream << Json{ { "editHotkey", a_keyCode } }.dump(2) << '\n';
+                stream << Json{
+                    { "editHotkey", a_keyCode },
+                    { "debugMode", a_debugMode },
+                }.dump(2) << '\n';
                 stream.flush();
                 if (!stream.good()) {
                     throw std::runtime_error("temporary hotkey settings file could not be written");
@@ -121,6 +125,7 @@ namespace ssc::runtime
         storagePath_ = a_path;
         loaded_ = true;
         editHotkey_.store(kDefaultEditHotkey, std::memory_order_release);
+        debugMode_.store(false, std::memory_order_release);
 
         try {
             std::error_code existenceError;
@@ -151,7 +156,14 @@ namespace ssc::runtime
                 !IsValidEditHotkey(static_cast<std::uint32_t>(value))) {
                 return Failure("editHotkey is not an assignable keyboard key");
             }
+            const auto debugIterator = document.find("debugMode");
+            if (debugIterator != document.end() && !debugIterator->is_boolean()) {
+                return Failure("debugMode must be a boolean");
+            }
             editHotkey_.store(static_cast<std::uint32_t>(value), std::memory_order_release);
+            debugMode_.store(
+                debugIterator != document.end() && debugIterator->get<bool>(),
+                std::memory_order_release);
             return { true, {} };
         } catch (const std::exception& exception) {
             return Failure(std::string{ "hotkey settings could not be loaded: " } +
@@ -170,7 +182,10 @@ namespace ssc::runtime
             return Failure("hotkey settings are not ready");
         }
         try {
-            ReplaceFileTransactionally(storagePath_, a_keyCode);
+            ReplaceFileTransactionally(
+                storagePath_,
+                a_keyCode,
+                debugMode_.load(std::memory_order_acquire));
             editHotkey_.store(a_keyCode, std::memory_order_release);
             return { true, {} };
         } catch (const std::exception& exception) {
@@ -179,8 +194,32 @@ namespace ssc::runtime
         }
     }
 
+    EditHotkeySettingsResult EditHotkeySettings::SetDebugMode(bool a_enabled)
+    {
+        std::scoped_lock lock{ mutex_ };
+        if (!loaded_ || storagePath_.empty()) {
+            return Failure("settings are not ready");
+        }
+        try {
+            ReplaceFileTransactionally(
+                storagePath_,
+                editHotkey_.load(std::memory_order_acquire),
+                a_enabled);
+            debugMode_.store(a_enabled, std::memory_order_release);
+            return { true, {} };
+        } catch (const std::exception& exception) {
+            return Failure(std::string{ "debug mode could not be saved: " } +
+                           exception.what());
+        }
+    }
+
     std::uint32_t EditHotkeySettings::EditHotkey() const noexcept
     {
         return editHotkey_.load(std::memory_order_acquire);
+    }
+
+    bool EditHotkeySettings::DebugMode() const noexcept
+    {
+        return debugMode_.load(std::memory_order_acquire);
     }
 }

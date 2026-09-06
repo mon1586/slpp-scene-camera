@@ -48,6 +48,7 @@ namespace ssc::runtime
 
         std::shared_ptr<const Storage> storage_;
         std::size_t count_{ 0 };
+        std::size_t playerIndex_{ kCapacity };
         bool containsPlayer_{ false };
         bool truncated_{ false };
 

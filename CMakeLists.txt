@@ -19,8 +19,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 
 option(SSC_BUILD_TESTS "Build unit tests" ON)
-option(SSC_ENABLE_DEBUG_ANCHOR "Show a direction arrow at the scene anchor" OFF)
-option(SSC_ENABLE_VISIBILITY_DEBUG "Show evaluated visibility rays in a debug HUD layer" OFF)
 
 # The POC uses a vtable hook and does not allocate a trampoline. Keep CommonLib's
 # own tests and patch-safety-only dependency out of this consumer build.
@@ -126,14 +124,6 @@ target_compile_definitions(
         WIN32_LEAN_AND_MEAN
         NOMINMAX
 )
-
-if(SSC_ENABLE_DEBUG_ANCHOR)
-    target_compile_definitions(SexlabSceneCamera PRIVATE SSC_ENABLE_DEBUG_ANCHOR=1)
-endif()
-
-if(SSC_ENABLE_VISIBILITY_DEBUG)
-    target_compile_definitions(SexlabSceneCamera PRIVATE SSC_ENABLE_VISIBILITY_DEBUG=1)
-endif()
 
 target_precompile_headers(SexlabSceneCamera PRIVATE src/pch.h)
 

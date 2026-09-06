@@ -487,16 +487,21 @@ int main()
     static_cast<void>(std::filesystem::remove(hotkeyPath, ignored));
     ssc::runtime::EditHotkeySettings hotkeySettings;
     passed &= Check(hotkeySettings.LoadFromFile(hotkeyPath).succeeded &&
-        hotkeySettings.EditHotkey() == ssc::runtime::kDefaultEditHotkey,
-        "a missing settings file uses F8 as the edit hotkey");
+        hotkeySettings.EditHotkey() == ssc::runtime::kDefaultEditHotkey &&
+        !hotkeySettings.DebugMode(),
+        "a missing settings file uses F8 and disables debug mode");
     constexpr std::uint32_t alternateHotkey = 0x41;
     passed &= Check(hotkeySettings.SetEditHotkey(alternateHotkey).succeeded &&
         hotkeySettings.EditHotkey() == alternateHotkey,
         "a changed edit hotkey is saved and becomes active");
+    passed &= Check(hotkeySettings.SetDebugMode(true).succeeded &&
+        hotkeySettings.DebugMode() && hotkeySettings.EditHotkey() == alternateHotkey,
+        "enabling debug mode preserves the edit hotkey");
     ssc::runtime::EditHotkeySettings reloadedHotkeySettings;
     passed &= Check(reloadedHotkeySettings.LoadFromFile(hotkeyPath).succeeded &&
-        reloadedHotkeySettings.EditHotkey() == alternateHotkey,
-        "the changed edit hotkey survives a settings reload");
+        reloadedHotkeySettings.EditHotkey() == alternateHotkey &&
+        reloadedHotkeySettings.DebugMode(),
+        "the edit hotkey and debug mode survive a settings reload");
     passed &= Check(!reloadedHotkeySettings.SetEditHotkey(
         ssc::runtime::kEscapeKeyboardKey).succeeded &&
         reloadedHotkeySettings.EditHotkey() == alternateHotkey,

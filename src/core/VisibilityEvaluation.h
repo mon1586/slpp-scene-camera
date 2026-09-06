@@ -3,6 +3,7 @@
 #include "core/CameraTypes.h"
 
 #include <cstdint>
+#include <array>
 #include <optional>
 #include <span>
 #include <string>
@@ -12,10 +13,22 @@ namespace ssc::core
 {
     enum class VisibilityPoint
     {
-        kFace,
-        kChest,
-        kWaist,
+        kBodyCenter,
+        kAnchor,
+        kAnchorTopLeft,
+        kAnchorTopRight,
+        kAnchorBottomLeft,
+        kAnchorBottomRight,
     };
+
+    inline constexpr float kAnchorLOSWidth = 32.0F;
+    inline constexpr float kAnchorLOSHeight = 18.0F;
+    inline constexpr std::array kAnchorLOSPoints{
+        VisibilityPoint::kAnchor, VisibilityPoint::kAnchorTopLeft,
+        VisibilityPoint::kAnchorTopRight, VisibilityPoint::kAnchorBottomLeft,
+        VisibilityPoint::kAnchorBottomRight,
+    };
+    [[nodiscard]] std::array<Vec3, 5> AnchorLOSRayOrigins(const CameraPose& a_camera) noexcept;
 
     enum class VisibilityPointStatus
     {
@@ -29,7 +42,7 @@ namespace ssc::core
     {
         std::size_t participantIndex{ 0 };
         std::uint32_t participantID{ 0 };
-        VisibilityPoint point{ VisibilityPoint::kFace };
+        VisibilityPoint point{ VisibilityPoint::kBodyCenter };
         VisibilityPointStatus status{ VisibilityPointStatus::kUnavailable };
         Vec3 rayStart;
         Vec3 target;
@@ -54,6 +67,9 @@ namespace ssc::core
         kNone,
         kPoseUnavailable,
         kParticipantNotVisible,
+        kAnchorUnavailable,
+        kAnchorCenterObstructed,
+        kAnchorCornersObstructed,
     };
 
     struct CameraCandidateVisibility
@@ -69,10 +85,24 @@ namespace ssc::core
         bool usable{ false };
     };
 
+    struct AnchorLOSMetrics
+    {
+        float intervalSeconds{ 0.5F };
+        std::uint64_t sampleCount{ 0 };
+        double lastMilliseconds{ 0.0 };
+        double averageMilliseconds{ 0.0 };
+        double maximumMilliseconds{ 0.0 };
+        double traceMilliseconds{ 0.0 };
+        std::size_t rayQueryCount{ 0 };
+    };
+
+    void ApplyAnchorLOSRule(CameraCandidateVisibility& a_candidate) noexcept;
+
     struct VisibilityEvaluationSnapshot
     {
         std::vector<CameraCandidateVisibility> candidates;
         std::optional<std::string> selectedPresetID;
+        std::optional<AnchorLOSMetrics> anchorLOS;
     };
 
     class VisibilityEvaluator

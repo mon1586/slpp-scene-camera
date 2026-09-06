@@ -15,8 +15,7 @@ namespace ssc::runtime
         [[nodiscard]] SceneParticipantSnapshot CollectParticipants(
             const SceneKey& a_key) const override;
         [[nodiscard]] std::optional<SceneAnchorSamples> CollectAnchorInput(
-            const SceneParticipantSnapshot& a_participants,
-            std::span<Vec3> a_pelvisStorage) const override;
+            const SceneParticipantSnapshot& a_participants) const override;
         [[nodiscard]] std::optional<SceneVisibilitySamples> CollectVisibilityInput(
             const SceneParticipantSnapshot& a_participants,
             std::span<std::uint32_t> a_participantIDStorage,

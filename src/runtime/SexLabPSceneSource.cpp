@@ -2,14 +2,12 @@
 #include "runtime/PluginIdentity.h"
 #include "runtime/SceneParticipantSnapshotStorage.h"
 
+#include <numeric>
+
 namespace ssc::runtime
 {
     namespace
     {
-        const RE::BSFixedString kPelvisNodeName{ "NPC Pelvis [Pelv]" };
-        const RE::BSFixedString kChestNodeName{ "NPC Spine2 [Spn2]" };
-        const RE::BSFixedString kFaceNodeName{ "NPC Head [Head]" };
-
         [[nodiscard]] Vec3 ToRuntime(const RE::NiPoint3& a_point) noexcept
         {
             return { a_point.x, a_point.y, a_point.z };
@@ -19,6 +17,48 @@ namespace ssc::runtime
         {
             // Skyrim actors use +Y as their zero-yaw forward direction.
             return { std::sin(a_yaw), std::cos(a_yaw), 0.0F };
+        }
+
+        [[nodiscard]] bool IsFinite(const RE::NiPoint3& a_point) noexcept
+        {
+            return std::isfinite(a_point.x) &&
+                   std::isfinite(a_point.y) &&
+                   std::isfinite(a_point.z);
+        }
+
+        [[nodiscard]] std::optional<Vec3> TorsoCenter(const RE::Actor* a_actor) noexcept
+        {
+            auto* root = a_actor ? a_actor->Get3D() : nullptr;
+            if (!root) {
+                return std::nullopt;
+            }
+
+            static const RE::BSFixedString pelvisNodeName{ "NPC Pelvis [Pelv]" };
+            static const RE::BSFixedString chestNodeName{ "NPC Spine2 [Spn2]" };
+            const auto* pelvis = root->GetObjectByName(pelvisNodeName);
+            const auto* chest = root->GetObjectByName(chestNodeName);
+            if (!pelvis || !chest ||
+                !IsFinite(pelvis->world.translate) || !IsFinite(chest->world.translate)) {
+                return std::nullopt;
+            }
+
+            const auto& waistPosition = pelvis->world.translate;
+            const auto& chestPosition = chest->world.translate;
+            return Vec3{
+                std::midpoint(waistPosition.x, chestPosition.x),
+                std::midpoint(waistPosition.y, chestPosition.y),
+                std::midpoint(waistPosition.z, chestPosition.z),
+            };
+        }
+
+        [[nodiscard]] std::optional<Vec3> BodyCenter(const RE::Actor* a_actor) noexcept
+        {
+            auto* root = a_actor ? a_actor->Get3D() : nullptr;
+            if (!root || !IsFinite(root->worldBound.center) ||
+                !std::isfinite(root->worldBound.radius) || root->worldBound.radius <= 0.0F) {
+                return std::nullopt;
+            }
+            return ToRuntime(root->worldBound.center);
         }
 
         [[nodiscard]] std::optional<SceneEventType> ParseEvent(std::string_view a_name) noexcept
@@ -161,6 +201,9 @@ namespace ssc::runtime
             for (std::size_t index = 0; index < result.count_; ++index) {
                 if (storage->handles[index].native_handle() == handle.native_handle()) {
                     duplicate = true;
+                    if (isPlayer) {
+                        result.playerIndex_ = index;
+                    }
                     break;
                 }
             }
@@ -170,12 +213,16 @@ namespace ssc::runtime
             }
 
             if (result.count_ < storage->handles.size()) {
+                if (isPlayer) {
+                    result.playerIndex_ = result.count_;
+                }
                 storage->handles[result.count_++] = handle;
                 result.containsPlayer_ = result.containsPlayer_ || isPlayer;
             } else {
                 result.truncated_ = true;
                 if (isPlayer && !result.containsPlayer_) {
                     storage->handles.back() = handle;
+                    result.playerIndex_ = storage->handles.size() - 1;
                     result.containsPlayer_ = true;
                 }
             }
@@ -185,12 +232,12 @@ namespace ssc::runtime
     }
 
     std::optional<SceneAnchorSamples> SexLabPSceneSource::CollectAnchorInput(
-        const SceneParticipantSnapshot& a_participants,
-        std::span<Vec3> a_pelvisStorage) const
+        const SceneParticipantSnapshot& a_participants) const
     {
         if (!a_participants.storage_ ||
             a_participants.count_ == 0 ||
-            a_participants.count_ > a_pelvisStorage.size()) {
+            !a_participants.containsPlayer_ ||
+            a_participants.playerIndex_ >= a_participants.count_) {
             return std::nullopt;
         }
 
@@ -199,40 +246,19 @@ namespace ssc::runtime
             return std::nullopt;
         }
 
-        std::optional<Vec3> playerPelvisForward;
-        for (std::size_t index = 0; index < a_participants.count_; ++index) {
-            const auto actor = a_participants.storage_->handles[index].get();
-            auto* root = actor ? actor->Get3D() : nullptr;
-            auto* pelvis = root ? root->GetObjectByName(kPelvisNodeName) : nullptr;
-            if (!pelvis) {
-                logger::debug("Cannot capture scene anchor: participant {} has no Pelvis node", index);
-                return std::nullopt;
-            }
-
-            const auto pelvisPosition = ToRuntime(pelvis->world.translate);
-            a_pelvisStorage[index] = pelvisPosition;
-            if (actor.get() == player) {
-                playerPelvisForward = ToRuntime(pelvis->world.rotate.GetVectorY());
-            }
-        }
-
-        if (!playerPelvisForward) {
+        const auto actor =
+            a_participants.storage_->handles[a_participants.playerIndex_].get();
+        if (actor.get() != player) {
             return std::nullopt;
         }
 
-        const auto playerActorForward = ForwardFromYaw(player->GetAngleZ());
-        logger::debug(
-            "Player direction samples: Pelvis forward ({:.3f}, {:.3f}, {:.3f}), actor forward ({:.3f}, {:.3f}, {:.3f})",
-            playerPelvisForward->x,
-            playerPelvisForward->y,
-            playerPelvisForward->z,
-            playerActorForward.x,
-            playerActorForward.y,
-            playerActorForward.z);
+        const auto bodyCenter = TorsoCenter(actor.get());
+        if (!bodyCenter) {
+            return std::nullopt;
+        }
         return SceneAnchorSamples{
-            std::span<const Vec3>{ a_pelvisStorage.data(), a_participants.count_ },
-            playerPelvisForward,
-            playerActorForward,
+            *bodyCenter,
+            ForwardFromYaw(player->GetAngleZ()),
         };
     }
 
@@ -250,40 +276,24 @@ namespace ssc::runtime
             return std::nullopt;
         }
 
-        constexpr std::array pointKinds{
-            core::VisibilityPoint::kFace,
-            core::VisibilityPoint::kChest,
-            core::VisibilityPoint::kWaist,
-        };
-        const std::array nodeNames{
-            std::addressof(kFaceNodeName),
-            std::addressof(kChestNodeName),
-            std::addressof(kPelvisNodeName),
-        };
-
         for (std::size_t participantIndex = 0;
              participantIndex < a_participants.count_;
-             ++participantIndex) {
+            ++participantIndex) {
             const auto actor = a_participants.storage_->handles[participantIndex].get();
-            auto* root = actor ? actor->Get3D() : nullptr;
             const auto actorID = actor ? actor->GetFormID() : 0;
             a_participantIDStorage[participantIndex] = actorID;
 
-            for (std::size_t pointIndex = 0; pointIndex < pointKinds.size(); ++pointIndex) {
-                const auto targetIndex =
-                    participantIndex * pointKinds.size() + pointIndex;
-                auto& target = a_targetStorage[targetIndex];
-                target = { participantIndex, actorID, pointKinds[pointIndex], std::nullopt };
-
-                auto* node = root ? root->GetObjectByName(*nodeNames[pointIndex]) : nullptr;
-                if (node) {
-                    target.position = ToRuntime(node->world.translate);
-                } else {
-                    logger::debug(
-                        "Visibility point '{}' is unavailable for participant {:08X}",
-                        core::VisibilityPointName(pointKinds[pointIndex]),
-                        actorID);
-                }
+            auto& target = a_targetStorage[participantIndex];
+            target = {
+                participantIndex,
+                actorID,
+                core::VisibilityPoint::kBodyCenter,
+                BodyCenter(actor.get()),
+            };
+            if (!target.position) {
+                logger::debug(
+                    "Body center is unavailable for participant {:08X}",
+                    actorID);
             }
         }
 

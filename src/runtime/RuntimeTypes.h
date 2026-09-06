@@ -29,22 +29,23 @@ namespace ssc::runtime
 
     struct SceneAnchorSamples
     {
-        std::span<const Vec3> participantPelvisPositions;
-        std::optional<Vec3> playerPelvisForward;
-        std::optional<Vec3> playerActorForward;
+        Vec3 bodyCenter;
+        Vec3 playerActorForward;
     };
 
     struct VisibilityTarget
     {
         std::size_t participantIndex{ 0 };
         std::uint32_t participantID{ 0 };
-        core::VisibilityPoint point{ core::VisibilityPoint::kFace };
+        core::VisibilityPoint point{ core::VisibilityPoint::kBodyCenter };
         std::optional<Vec3> position;
+        // Omitted for ordinary visibility rays that start at the candidate camera center.
+        std::optional<Vec3> rayOrigin;
     };
 
     struct SceneVisibilitySamples
     {
-        static constexpr std::size_t kPointsPerParticipant = 3;
+        static constexpr std::size_t kPointsPerParticipant = 1;
 
         std::span<const std::uint32_t> participantIDs;
         std::span<const VisibilityTarget> targets;

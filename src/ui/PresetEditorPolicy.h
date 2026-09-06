@@ -41,6 +41,8 @@ namespace ssc::ui
         std::size_t visiblePoints{ 0 };
         std::size_t availablePoints{ 0 };
         core::CandidateFailureReason failureReason{ core::CandidateFailureReason::kNone };
+        core::VisibilityPointStatus centerStatus{ core::VisibilityPointStatus::kUnavailable };
+        std::size_t visibleCorners{ 0 };
     };
 
     [[nodiscard]] inline PresetSceneSummary SummarizePresetForScene(
@@ -57,6 +59,16 @@ namespace ssc::ui
         if (candidate == a_evaluation->candidates.end()) {
             return {};
         }
+        auto centerStatus = core::VisibilityPointStatus::kUnavailable;
+        std::size_t visibleCorners = 0;
+        for (const auto& point : candidate->points) {
+            if (point.point == core::VisibilityPoint::kAnchor) {
+                centerStatus = point.status;
+            } else if (point.point != core::VisibilityPoint::kBodyCenter &&
+                point.status == core::VisibilityPointStatus::kVisible) {
+                ++visibleCorners;
+            }
+        }
         return {
             candidate->usable ? PresetSceneStatus::kUsable : PresetSceneStatus::kBlocked,
             candidate->visibleParticipantCount,
@@ -64,6 +76,8 @@ namespace ssc::ui
             candidate->visiblePointCount,
             candidate->availablePointCount,
             candidate->failureReason,
+            centerStatus,
+            visibleCorners,
         };
     }
 

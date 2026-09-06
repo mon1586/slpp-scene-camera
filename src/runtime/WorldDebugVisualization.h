@@ -2,6 +2,9 @@
 
 #include "runtime/IDebugVisualization.h"
 
+#include <mutex>
+#include <optional>
+
 namespace ssc::runtime
 {
     class WorldDebugVisualization final : public IDebugVisualization
@@ -9,34 +12,39 @@ namespace ssc::runtime
     public:
         static WorldDebugVisualization* GetSingleton() noexcept;
         [[nodiscard]] static bool Register();
+        [[nodiscard]] bool Available() const noexcept;
 
         [[nodiscard]] bool ShowAnchor(
             const Vec3& a_position,
-            const Vec3& a_forward) noexcept override;
+            const Vec3& a_forward,
+            const Vec3& a_targetPosition) noexcept override;
         void Update() noexcept override;
         void HideAnchor() noexcept override;
         void ShowVisibility(
             std::shared_ptr<const core::VisibilityEvaluationSnapshot> a_evaluation) noexcept override;
         void HideVisibility() noexcept override;
+        [[nodiscard]] bool Enabled() const noexcept override;
+        void StepCandidate(int a_direction) noexcept override;
 
         void SetOccludedSegmentsVisible(bool a_visible) noexcept;
         [[nodiscard]] bool OccludedSegmentsVisible() const noexcept;
         [[nodiscard]] std::string SelectedCandidateLabel() const;
 
     private:
-        [[nodiscard]] bool CreateMarker(
-            const Vec3& a_position,
-            const Vec3& a_forward) noexcept;
-        [[nodiscard]] bool UpdateMarker(
-            const Vec3& a_position,
-            const Vec3& a_forward) noexcept;
-        void DestroyMarker() noexcept;
+        struct AnchorDisplay
+        {
+            Vec3 position;
+            Vec3 forward;
+            Vec3 targetPosition;
+        };
+
         static void __stdcall RenderVisibility();
 
-        RE::NiPointer<RE::BSTempEffectParticle> arrow_;
-        bool arrowPrepared_{ false };
+        mutable std::mutex anchorMutex_;
+        std::optional<AnchorDisplay> anchor_;
         std::atomic<std::shared_ptr<const core::VisibilityEvaluationSnapshot>> evaluation_;
         std::atomic_size_t selectedCandidate_{ 0 };
         std::atomic_bool showOccludedSegments_{ true };
+        std::atomic_bool registered_{ false };
     };
 }

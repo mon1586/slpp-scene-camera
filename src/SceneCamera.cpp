@@ -8,6 +8,9 @@ namespace ssc
     {
         constexpr auto kMaximumSceneDuration = std::chrono::minutes{ 30 };
         constexpr auto kAnimationChangeDelay = std::chrono::seconds{ 1 };
+        constexpr auto kDebugResumeInterval = std::chrono::milliseconds{ 500 };
+        constexpr auto kDebugResumeTimeout = std::chrono::seconds{ 2 };
+        constexpr unsigned kDebugResumeAttempts = 3;
 
         [[nodiscard]] core::Vec3 ToCore(const runtime::Vec3& a_value) noexcept
         {
@@ -69,7 +72,8 @@ namespace ssc
     {
         const auto previewChanged = previewService_ &&
             previewService_->Request() != appliedPreviewRequest_;
-        return anchorCapturePending_.load(std::memory_order_acquire) ||
+        return session_.IsActive() ||
+               sceneEvaluationPending_.load(std::memory_order_acquire) ||
                cameraPoseActive_.load(std::memory_order_acquire) ||
                resetRequested_.load(std::memory_order_acquire) ||
                presetStepRequested_.load(std::memory_order_acquire) != 0 || previewChanged;
@@ -77,7 +81,10 @@ namespace ssc
 
     bool SceneCamera::AllowsUpdateWhilePaused() const noexcept
     {
-        return previewService_ && previewService_->PreviewSessionActive();
+        const auto debugMode = debugVisualization_ && debugVisualization_->Enabled();
+        return (previewService_ && previewService_->PreviewSessionActive()) ||
+               debugResumePending_.load(std::memory_order_acquire) ||
+               debugMode != debugModeObserved_;
     }
 
     void SceneCamera::HandleSceneEvent(const runtime::SceneEvent& a_event)
@@ -148,8 +155,8 @@ namespace ssc
             logger::warn("Prepared scene no longer contains the player; abandoning camera switch");
             session_.Clear();
             participants_ = {};
-            anchorCapturePending_.store(false, std::memory_order_release);
-            anchorCaptureReadyAt_ = {};
+            sceneEvaluationPending_.store(false, std::memory_order_release);
+            sceneEvaluationReadyAt_ = {};
             Clear();
             return;
         }
@@ -158,10 +165,10 @@ namespace ssc
         if (!session_.Activate(a_event.key)) {
             return;
         }
-        anchorCaptureReadyAt_ = std::chrono::steady_clock::now();
-        anchorCapturePending_.store(true, std::memory_order_release);
-        activeSince_ = anchorCaptureReadyAt_;
-        logger::info("Scene anchor capture pending for {:08X}/{}",
+        sceneEvaluationReadyAt_ = now_();
+        sceneEvaluationPending_.store(true, std::memory_order_release);
+        activeSince_ = sceneEvaluationReadyAt_;
+        logger::info("Initial scene evaluation pending for {:08X}/{}",
             a_event.key.sourceID, a_event.key.instanceID);
     }
 
@@ -175,11 +182,11 @@ namespace ssc
                 a_event.key.sourceID, a_event.key.instanceID);
             return;
         }
-        anchorCaptureReadyAt_ = std::chrono::steady_clock::now() + kAnimationChangeDelay;
-        anchorCapturePending_.store(true, std::memory_order_release);
+        sceneEvaluationReadyAt_ = now_() + kAnimationChangeDelay;
+        sceneEvaluationPending_.store(true, std::memory_order_release);
         presetSwitchEnabled_.store(false, std::memory_order_release);
         presetStepRequested_.store(0, std::memory_order_release);
-        logger::info("Scene anchor recapture scheduled in {} ms for {:08X}/{}",
+        logger::info("Scene visibility reevaluation scheduled in {} ms for {:08X}/{}",
             std::chrono::duration_cast<std::chrono::milliseconds>(kAnimationChangeDelay).count(),
             a_event.key.sourceID,
             a_event.key.instanceID);
@@ -206,12 +213,47 @@ namespace ssc
         Restore("matching AnimationEnd"sv);
     }
 
-    void SceneCamera::Update()
+    void SceneCamera::Update(float a_deltaSeconds)
     {
         ApplyRequestedReset();
+        const auto debugMode = debugVisualization_ && debugVisualization_->Enabled();
+        const auto debugModeChanged = debugMode != debugModeObserved_;
+        if (debugModeChanged) {
+            debugResumePending_.store(false, std::memory_order_release);
+            anchorLOSTimeSeconds_ = 0.0F;
+            anchorLOSMetrics_ = {};
+            logger::info("Scene camera debug mode {}", debugMode ? "enabled" : "disabled");
+            if (session_.IsActive()) {
+                sceneEvaluationReadyAt_ = now_();
+                sceneEvaluationPending_.store(true, std::memory_order_release);
+            }
+            if (debugMode && !ReleaseCamera("debug mode enabled"sv, false)) {
+                return;
+            }
+            debugModeObserved_ = debugMode;
+            if (!debugMode && session_.IsActive()) {
+                debugResumeNextAttempt_ = now_();
+                debugResumeDeadline_ = debugResumeNextAttempt_ + kDebugResumeTimeout;
+                debugResumeAttemptsLeft_ = kDebugResumeAttempts;
+                debugResumePending_.store(true, std::memory_order_release);
+                presetSwitchEnabled_.store(false, std::memory_order_release);
+                presetStepRequested_.store(0, std::memory_order_release);
+            }
+            if (debugMode) {
+                PublishPreviewFeedback(
+                    false,
+                    "Debug mode active; SmoothCam remains in control",
+                    std::nullopt,
+                    false);
+            }
+        }
         const auto previewRequest = previewService_ ? previewService_->Request() : nullptr;
         const auto previewSessionActive = previewService_ &&
             previewService_->PreviewSessionActive();
+        if (debugModeChanged && !debugMode && !previewSessionActive) {
+            // The explicit resume owns this request, including any old editor-close request.
+            appliedPreviewRequest_ = previewRequest;
+        }
         if (!session_.IsActive() && !cameraPose_) {
             appliedPreviewRequest_ = previewRequest;
             return;
@@ -219,17 +261,159 @@ namespace ssc
         if (debugVisualization_) {
             debugVisualization_->Update();
         }
-        const auto now = std::chrono::steady_clock::now();
+        const auto now = now_();
+        if (debugResumePending_.load(std::memory_order_acquire) &&
+            (previewSessionActive || now >= debugResumeDeadline_)) {
+            debugResumePending_.store(false, std::memory_order_release);
+            if (!previewSessionActive) {
+                sceneEvaluationPending_.store(false, std::memory_order_release);
+                sceneEvaluationReadyAt_ = {};
+                PublishPreviewFeedback(false,
+                    "Could not resume camera; toggle Debug mode on/off to retry");
+            }
+        }
         if (session_.IsActive() && now - activeSince_ > kMaximumSceneDuration) {
             Restore("scene watchdog timeout"sv);
             return;
+        }
+
+        const auto sceneEvaluationPending =
+            sceneEvaluationPending_.load(std::memory_order_acquire);
+        const auto sceneEvaluationReady =
+            sceneEvaluationPending && now >= sceneEvaluationReadyAt_;
+        const auto shouldTrackAnchor =
+            session_.IsActive() && (anchor_.has_value() || sceneEvaluationReady);
+        bool anchorRefreshed = false;
+        bool poseAppliedThisUpdate = false;
+        bool evaluatedThisUpdate = false;
+        if (shouldTrackAnchor) {
+            const auto samples = sceneSource_ ?
+                sceneSource_->CollectAnchorInput(participants_) : std::nullopt;
+            if (samples) {
+                auto updatedAnchor = anchorCalculator_.Evaluate({
+                    ToCore(samples->bodyCenter),
+                    ToCore(samples->playerActorForward),
+                });
+                if (updatedAnchor) {
+                    const auto firstAnchor = !anchor_.has_value();
+                    const auto targetPosition = updatedAnchor->position;
+                    if (anchor_) {
+                        updatedAnchor->position = core::SmoothAnchorPosition(
+                            anchor_->position, targetPosition, a_deltaSeconds);
+                        if (!std::isfinite(a_deltaSeconds) || a_deltaSeconds <= 0.0F) {
+                            updatedAnchor->forward = anchor_->forward;
+                        }
+                    }
+                    anchor_ = std::move(updatedAnchor);
+                    anchorRefreshed = true;
+                    if (debugVisualization_ && !debugVisualization_->ShowAnchor(
+                            ToRuntime(anchor_->position), ToRuntime(anchor_->forward),
+                            ToRuntime(targetPosition)) &&
+                        firstAnchor) {
+                        logger::warn("Scene anchor debug marker could not be displayed");
+                    }
+                    if (firstAnchor) {
+                        logger::info(
+                            "Scene anchor acquired at torso center (waist/chest midpoint) ({:.2f}, {:.2f}, {:.2f}), forward ({:.3f}, {:.3f}, {:.3f})",
+                            anchor_->position.x,
+                            anchor_->position.y,
+                            anchor_->position.z,
+                            anchor_->forward.x,
+                            anchor_->forward.y,
+                            anchor_->forward.z);
+                    }
+                }
+            }
+
+            if (!anchorRefreshed && !anchor_) {
+                return;
+            }
         }
 
         const auto previewEnded = anchor_ && !previewSessionActive &&
             previewRequest != appliedPreviewRequest_ && previewRequest &&
             !previewRequest->transform && appliedPreviewRequest_ &&
             appliedPreviewRequest_->transform;
-        if (previewEnded && !EvaluateVisibility(previewRequest->presetID)) {
+        if (!anchorRefreshed) {
+            anchorInputUnavailable_ = true;
+            anchorLOSTimeSeconds_ = 0.0F;
+        }
+        if (sceneEvaluationReady && anchorRefreshed) {
+            sceneEvaluationPending_.store(false, std::memory_order_release);
+            sceneEvaluationReadyAt_ = {};
+            if (!EvaluateVisibility(previewEnded ? previewRequest->presetID : "")) {
+                return;
+            }
+            evaluatedThisUpdate = true;
+            anchorInputUnavailable_ = false;
+            if (!debugMode && !debugResumePending_.load(std::memory_order_acquire)) {
+                bool requestedPoseApplied = false;
+                if (!ApplyRequestedTransform(previewRequest, false, requestedPoseApplied)) {
+                    return;
+                }
+                poseAppliedThisUpdate = requestedPoseApplied;
+            }
+        }
+
+        if (debugResumePending_.load(std::memory_order_acquire) &&
+            !sceneEvaluationPending_.load(std::memory_order_acquire) &&
+            anchorRefreshed && now >= debugResumeNextAttempt_) {
+            if (!ResolveTransform(previewRequest)) {
+                debugResumePending_.store(false, std::memory_order_release);
+                bool unusedPoseApplied = false;
+                static_cast<void>(ApplyRequestedTransform(previewRequest, false, unusedPoseApplied));
+            } else {
+                --debugResumeAttemptsLeft_;
+                debugResumeNextAttempt_ = now + kDebugResumeInterval;
+                bool resumedPoseApplied = false;
+                if (!ApplyRequestedTransform(previewRequest, false, resumedPoseApplied)) {
+                    if (session_.IsActive() && debugResumeAttemptsLeft_ == 0) {
+                        debugResumePending_.store(false, std::memory_order_release);
+                        PublishPreviewFeedback(false,
+                            "Could not resume camera; toggle Debug mode on/off to retry");
+                    }
+                    return;
+                }
+                debugResumePending_.store(false, std::memory_order_release);
+                poseAppliedThisUpdate = poseAppliedThisUpdate || resumedPoseApplied;
+            }
+        }
+
+        const auto runningTime = std::isfinite(a_deltaSeconds) && a_deltaSeconds > 0.0F;
+        if (!evaluatedThisUpdate && !previewSessionActive && !previewEnded &&
+            !sceneEvaluationPending_.load(std::memory_order_acquire) && anchorRefreshed && runningTime) {
+            anchorLOSTimeSeconds_ += a_deltaSeconds;
+            if (anchorInputUnavailable_ || anchorLOSTimeSeconds_ >= anchorLOSMetrics_.intervalSeconds) {
+                MeasureAnchorLOS();
+                evaluatedThisUpdate = true;
+                anchorInputUnavailable_ = false;
+            }
+        }
+        const auto canStep = anchorRefreshed && !anchorInputUnavailable_ &&
+            !debugResumePending_.load(std::memory_order_acquire) &&
+            !previewSessionActive && !sceneEvaluationPending_.load(std::memory_order_acquire);
+        presetSwitchEnabled_.store(canStep, std::memory_order_release);
+        if (!canStep) {
+            presetStepRequested_.store(0, std::memory_order_release);
+        }
+        if (debugMode) {
+            const auto requestedStep =
+                presetStepRequested_.exchange(0, std::memory_order_acq_rel);
+            if (requestedStep != 0 && debugVisualization_) {
+                debugVisualization_->StepCandidate(requestedStep);
+            }
+            if (sceneEvaluationReady) {
+                PublishPreviewFeedback(
+                    false,
+                    "Debug mode active; SmoothCam remains in control",
+                    std::nullopt,
+                    false);
+            }
+            return;
+        }
+
+        if (previewEnded && !evaluatedThisUpdate &&
+            !EvaluateVisibility(previewRequest->presetID)) {
             return;
         }
 
@@ -238,10 +422,14 @@ namespace ssc
             static_cast<void>(ReleaseCamera("preset editor closed with no visible camera preset"sv));
             return;
         }
-        if (anchor_ && previewRequest != appliedPreviewRequest_) {
-            if (!ApplyRequestedTransform(previewRequest, previewSessionActive)) {
+        if (anchor_ && !debugResumePending_.load(std::memory_order_acquire) &&
+            previewRequest != appliedPreviewRequest_) {
+            bool requestedPoseApplied = false;
+            if (!ApplyRequestedTransform(
+                    previewRequest, previewSessionActive, requestedPoseApplied)) {
                 return;
             }
+            poseAppliedThisUpdate = poseAppliedThisUpdate || requestedPoseApplied;
         }
 
         if (previewSessionActive) {
@@ -249,12 +437,42 @@ namespace ssc
             presetStepRequested_.store(0, std::memory_order_release);
         } else {
             const auto requestedStep = presetStepRequested_.exchange(0, std::memory_order_acq_rel);
-            if (requestedStep != 0 && !SelectPresetStep(requestedStep)) {
-                return;
+            if (requestedStep != 0) {
+                bool stepPoseApplied = false;
+                if (!SelectPresetStep(requestedStep, stepPoseApplied)) {
+                    return;
+                }
+                poseAppliedThisUpdate = poseAppliedThisUpdate || stepPoseApplied;
             }
         }
 
-        if (cameraPose_) {
+        if (cameraPose_ && anchor_ && !poseAppliedThisUpdate) {
+            if (const auto trackedTransform = ResolveTransform(previewRequest)) {
+                const auto trackedPose = poseCalculator_.Evaluate(
+                    *anchor_,
+                    {
+                        {
+                            trackedTransform->framingOffset.right,
+                            trackedTransform->framingOffset.up,
+                        },
+                        {
+                            trackedTransform->orbit.yawDegrees,
+                            trackedTransform->orbit.pitchDegrees,
+                            trackedTransform->orbit.distance,
+                        },
+                    });
+                if (!trackedPose) {
+                    logger::error("Could not update the camera pose from the tracked scene anchor");
+                    Restore("tracked camera pose generation failed"sv);
+                    return;
+                }
+                cameraPose_ = runtime::ToRuntimeCameraPose(
+                    *trackedPose,
+                    trackedTransform->fovOffsetDegrees);
+            }
+        }
+
+        if (cameraPose_ && !poseAppliedThisUpdate) {
             if (!cameraControl_ || !cameraControl_->StillOwnsCamera()) {
                 logger::warn("SmoothCam camera ownership was lost; preset pose was discarded");
                 Restore("camera ownership check failed"sv);
@@ -269,65 +487,6 @@ namespace ssc
                 }
             }
         }
-        if (!session_.IsActive()) {
-            return;
-        }
-        if (!anchorCapturePending_.load(std::memory_order_acquire)) {
-            return;
-        }
-        if (now < anchorCaptureReadyAt_) {
-            return;
-        }
-
-        std::array<runtime::Vec3, runtime::SceneParticipantSnapshot::kCapacity> runtimePelvisPositions{};
-        const auto samples = sceneSource_ ?
-            sceneSource_->CollectAnchorInput(participants_, runtimePelvisPositions) : std::nullopt;
-        if (!samples) {
-            Restore("scene participant Pelvis nodes are unavailable"sv);
-            return;
-        }
-
-        std::array<core::Vec3, runtime::SceneParticipantSnapshot::kCapacity> corePelvisPositions{};
-        for (std::size_t index = 0; index < samples->participantPelvisPositions.size(); ++index) {
-            corePelvisPositions[index] = ToCore(samples->participantPelvisPositions[index]);
-        }
-        const auto playerPelvisForward = samples->playerPelvisForward ?
-            std::optional{ ToCore(*samples->playerPelvisForward) } : std::nullopt;
-        const auto playerActorForward = samples->playerActorForward ?
-            std::optional{ ToCore(*samples->playerActorForward) } : std::nullopt;
-
-        anchor_ = anchorCalculator_.Evaluate({
-            std::span<const core::Vec3>{
-                corePelvisPositions.data(), samples->participantPelvisPositions.size() },
-            playerPelvisForward,
-            playerActorForward,
-        });
-        if (!anchor_) {
-            Restore("could not derive a stable scene anchor"sv);
-            return;
-        }
-
-        anchorCapturePending_.store(false, std::memory_order_release);
-        anchorCaptureReadyAt_ = {};
-        if (debugVisualization_ && !debugVisualization_->ShowAnchor(
-                ToRuntime(anchor_->position), ToRuntime(anchor_->forward))) {
-            logger::warn("Scene anchor debug marker could not be displayed");
-        }
-        logger::info(
-            "Scene anchor fixed at ({:.2f}, {:.2f}, {:.2f}), forward ({:.3f}, {:.3f}, {:.3f})",
-            anchor_->position.x,
-            anchor_->position.y,
-            anchor_->position.z,
-            anchor_->forward.x,
-            anchor_->forward.y,
-            anchor_->forward.z);
-
-        if (!EvaluateVisibility()) {
-            return;
-        }
-
-        const auto request = previewService_ ? previewService_->Request() : nullptr;
-        static_cast<void>(ApplyRequestedTransform(request, false));
     }
 
     std::optional<runtime::PresetTransform> SceneCamera::ResolveTransform(
@@ -352,8 +511,10 @@ namespace ssc
 
     bool SceneCamera::ApplyRequestedTransform(
         const std::shared_ptr<const runtime::PresetPreviewRequest>& a_request,
-        bool a_liveEdit)
+        bool a_liveEdit,
+        bool& a_poseApplied)
     {
+        a_poseApplied = false;
         const auto transform = ResolveTransform(a_request);
         if (!transform) {
             appliedPreviewRequest_ = a_request;
@@ -377,7 +538,7 @@ namespace ssc
             const auto message = cameraControl_ && !previewPossible ?
                 std::string{ cameraControl_->UnavailableReason() } :
                 std::string{ visibilityEvaluation_ && !visibilityEvaluation_->candidates.empty() ?
-                    "No camera preset can show every participant" :
+                    "No camera preset meets the anchor LOS conditions" :
                     "No camera preset is available" };
             PublishPreviewFeedback(
                 false,
@@ -395,6 +556,7 @@ namespace ssc
             appliedPreviewRequest_ = previewService_ ? previewService_->Request() : a_request;
             return false;
         }
+        a_poseApplied = true;
         if (a_liveEdit && a_request && a_request->transform) {
             static_cast<void>(EvaluatePreviewVisibility(*a_request));
             PublishPreviewFeedback(
@@ -411,8 +573,8 @@ namespace ssc
     core::CameraCandidateVisibility SceneCamera::EvaluateVisibilityCandidate(
         std::string a_presetID,
         const runtime::PresetTransform& a_transform,
-        const runtime::SceneVisibilitySamples& a_samples,
-        std::size_t& a_rayCount)
+        std::size_t& a_rayCount,
+        double* a_traceMilliseconds)
     {
         auto pose = poseCalculator_.Evaluate(
             *anchor_,
@@ -428,6 +590,29 @@ namespace ssc
                 },
             });
 
+        // The player reference and all character layers are ignored by the probe.
+        constexpr std::array<std::uint32_t, 1> participantIDs{ 0x14 };
+        std::array<runtime::VisibilityTarget, 5> targets{};
+        const auto origins = pose ? core::AnchorLOSRayOrigins(*pose) :
+            std::array<core::Vec3, 5>{};
+        for (std::size_t index = 0; index < targets.size(); ++index) {
+            targets[index] = { 0, participantIDs.front(), core::kAnchorLOSPoints[index],
+                ToRuntime(anchor_->position), ToRuntime(origins[index]) };
+        }
+        auto candidate = EvaluateVisibilityAtPose(
+            std::move(a_presetID), std::move(pose), { participantIDs, targets },
+            a_rayCount, a_traceMilliseconds);
+        core::ApplyAnchorLOSRule(candidate);
+        return candidate;
+    }
+
+    core::CameraCandidateVisibility SceneCamera::EvaluateVisibilityAtPose(
+        std::string a_presetID,
+        std::optional<core::CameraPose> pose,
+        const runtime::SceneVisibilitySamples& a_samples,
+        std::size_t& a_rayCount,
+        double* a_traceMilliseconds)
+    {
         std::vector<core::VisibilityPointResult> pointResults;
         pointResults.reserve(a_samples.targets.size());
         for (const auto& target : a_samples.targets) {
@@ -436,19 +621,26 @@ namespace ssc
             point.participantID = target.participantID;
             point.point = target.point;
             point.target = target.position ? ToCore(*target.position) : core::Vec3{};
-            point.rayStart = pose ? pose->position : core::Vec3{};
+            point.rayStart = target.rayOrigin ? ToCore(*target.rayOrigin) :
+                (pose ? pose->position : core::Vec3{});
 
             if (!pose) {
                 point.hitObject = "camera pose unavailable";
             } else if (!target.position) {
-                point.hitObject = "participant node unavailable";
+                point.hitObject = "participant body center unavailable";
             } else if (!visibilityProbe_) {
                 point.hitObject = "visibility probe unavailable";
             } else {
+                const auto traceStartedAt = a_traceMilliseconds ?
+                    std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
                 const auto hit = visibilityProbe_->Trace(
-                    ToRuntime(pose->position),
+                    ToRuntime(point.rayStart),
                     *target.position,
                     target.participantID);
+                if (a_traceMilliseconds) {
+                    *a_traceMilliseconds += std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - traceStartedAt).count();
+                }
                 a_rayCount += hit.queryCount;
                 point.hitFraction = hit.fraction;
                 point.hitPosition = hit.position ?
@@ -478,6 +670,74 @@ namespace ssc
             std::move(pointResults));
     }
 
+    void SceneCamera::MeasureAnchorLOS()
+    {
+        if (!anchor_) {
+            return;
+        }
+        const auto startedAt = std::chrono::steady_clock::now();
+        const auto presets = presetProvider_ ? presetProvider_->Snapshot() : nullptr;
+        auto evaluation = std::make_shared<core::VisibilityEvaluationSnapshot>();
+        std::size_t rayCount = 0;
+        std::size_t visibleCenters = 0;
+        std::size_t visibleCorners = 0;
+        double traceMilliseconds = 0.0;
+        if (presets) {
+            evaluation->candidates.reserve(presets->size());
+            for (const auto& preset : *presets) {
+                auto candidate = EvaluateVisibilityCandidate(
+                    preset.id, preset.transform, rayCount, &traceMilliseconds);
+                for (const auto& point : candidate.points) {
+                    if (point.status == core::VisibilityPointStatus::kVisible) {
+                        if (point.point == core::VisibilityPoint::kAnchor) {
+                            ++visibleCenters;
+                        } else {
+                            ++visibleCorners;
+                        }
+                    }
+                }
+                evaluation->candidates.push_back(std::move(candidate));
+            }
+        }
+        const auto elapsed = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - startedAt).count();
+        ++anchorLOSMetrics_.sampleCount;
+        anchorLOSMetrics_.lastMilliseconds = elapsed;
+        anchorLOSMetrics_.averageMilliseconds +=
+            (elapsed - anchorLOSMetrics_.averageMilliseconds) /
+            static_cast<double>(anchorLOSMetrics_.sampleCount);
+        anchorLOSMetrics_.maximumMilliseconds =
+            std::max(anchorLOSMetrics_.maximumMilliseconds, elapsed);
+        anchorLOSMetrics_.traceMilliseconds = traceMilliseconds;
+        anchorLOSMetrics_.rayQueryCount = rayCount;
+        evaluation->anchorLOS = anchorLOSMetrics_;
+        evaluation->selectedPresetID = activePresetID_;
+        visibilityEvaluation_ = std::move(evaluation);
+        anchorLOSTimeSeconds_ = 0.0F;
+        if (debugVisualization_) {
+            debugVisualization_->ShowVisibility(visibilityEvaluation_);
+        }
+        if (previewService_) {
+            const auto previous = previewService_->Feedback();
+            auto feedback = previous ? *previous : runtime::PresetPreviewFeedback{};
+            feedback.visibilityEvaluation = visibilityEvaluation_;
+            previewService_->PublishFeedback(std::move(feedback));
+        }
+        if (debugModeObserved_ &&
+            (anchorLOSMetrics_.sampleCount == 1 || anchorLOSMetrics_.sampleCount % 10 == 0)) {
+            logger::info(
+                "Anchor LOS benchmark (camera-side 32x18, 5 rays/preset): sample={}, interval={:.2f}s, "
+                "candidates={}, visibleCenters={}, visibleCorners={}, "
+                "queries={}, batch={:.4f}ms, LOS={:.4f}ms, avg={:.4f}ms, max={:.4f}ms, "
+                "estimated={:.4f}ms/s (excludes logging/HUD)",
+                anchorLOSMetrics_.sampleCount, anchorLOSMetrics_.intervalSeconds,
+                presets ? presets->size() : 0, visibleCenters, visibleCorners, rayCount, elapsed,
+                traceMilliseconds, anchorLOSMetrics_.averageMilliseconds,
+                anchorLOSMetrics_.maximumMilliseconds,
+                anchorLOSMetrics_.averageMilliseconds / anchorLOSMetrics_.intervalSeconds);
+        }
+    }
+
     bool SceneCamera::EvaluatePreviewVisibility(
         const runtime::PresetPreviewRequest& a_request)
     {
@@ -485,27 +745,11 @@ namespace ssc
             return false;
         }
 
-        constexpr auto targetCapacity = runtime::SceneParticipantSnapshot::kCapacity *
-            runtime::SceneVisibilitySamples::kPointsPerParticipant;
-        std::array<std::uint32_t, runtime::SceneParticipantSnapshot::kCapacity> participantIDs{};
-        std::array<runtime::VisibilityTarget, targetCapacity> targets{};
-        const auto samples = sceneSource_ ?
-            sceneSource_->CollectVisibilityInput(participants_, participantIDs, targets) :
-            std::nullopt;
         auto evaluation = std::make_shared<core::VisibilityEvaluationSnapshot>();
-        if (!samples) {
-            visibilityEvaluation_ = std::move(evaluation);
-            if (debugVisualization_) {
-                debugVisualization_->ShowVisibility(visibilityEvaluation_);
-            }
-            return false;
-        }
-
         std::size_t rayCount = 0;
         auto candidate = EvaluateVisibilityCandidate(
             a_request.presetID.empty() ? "<new preset>" : a_request.presetID,
             *a_request.transform,
-            *samples,
             rayCount);
         logger::debug(
             "Preview visibility '{}': {}, participants {}/{}, points {}/{}, {} physics ray(s)",
@@ -527,108 +771,43 @@ namespace ssc
 
     bool SceneCamera::EvaluateVisibility(std::string_view a_preferredPresetID)
     {
-        presetSwitchEnabled_.store(false, std::memory_order_release);
-        presetStepRequested_.store(0, std::memory_order_release);
-        activePresetID_.reset();
-
-        auto evaluation = std::make_shared<core::VisibilityEvaluationSnapshot>();
-        const auto presetSnapshot = presetProvider_ ? presetProvider_->Snapshot() : nullptr;
-        if (!anchor_ || !presetSnapshot || presetSnapshot->empty()) {
-            visibilityEvaluation_ = evaluation;
-            if (debugVisualization_) {
-                debugVisualization_->ShowVisibility(visibilityEvaluation_);
-            }
-            return true;
-        }
-
-        constexpr auto targetCapacity = runtime::SceneParticipantSnapshot::kCapacity *
-            runtime::SceneVisibilitySamples::kPointsPerParticipant;
-        std::array<std::uint32_t, runtime::SceneParticipantSnapshot::kCapacity> participantIDs{};
-        std::array<runtime::VisibilityTarget, targetCapacity> targets{};
-        const auto visibilitySamples = sceneSource_ ?
-            sceneSource_->CollectVisibilityInput(participants_, participantIDs, targets) :
-            std::nullopt;
-        if (!visibilitySamples) {
-            logger::error("Could not collect participant visibility points");
-            visibilityEvaluation_ = evaluation;
-            if (debugVisualization_) {
-                debugVisualization_->ShowVisibility(visibilityEvaluation_);
-            }
-            static_cast<void>(ReleaseCamera("participant visibility points are unavailable"sv));
-            PublishPreviewFeedback(false, "Participant visibility points are unavailable");
+        if (!anchor_) {
             return false;
         }
-
-        evaluation->candidates.reserve(presetSnapshot->size());
-        const auto startedAt = std::chrono::steady_clock::now();
-        std::size_t rayCount = 0;
-        for (const auto& preset : *presetSnapshot) {
-            auto candidate = EvaluateVisibilityCandidate(
-                preset.id,
-                preset.transform,
-                *visibilitySamples,
-                rayCount);
-            logger::info(
-                "Visibility candidate '{}': {}, participants {}/{}, points {}/{}",
-                candidate.presetID,
-                core::CandidateFailureReasonName(candidate.failureReason),
-                candidate.visibleParticipantCount,
-                candidate.participants.size(),
-                candidate.visiblePointCount,
-                candidate.availablePointCount);
-            for (const auto& point : candidate.points) {
-                logger::debug(
-                    "Visibility '{}' participant {:08X} {}: {}, hit={}, fraction={:.5f}, position=({}, {}, {})",
-                    candidate.presetID,
-                    point.participantID,
-                    core::VisibilityPointName(point.point),
-                    core::VisibilityPointStatusName(point.status),
-                    point.hitObject.empty() ? "none" : point.hitObject,
-                    point.hitFraction,
-                    point.hitPosition ? point.hitPosition->x : 0.0F,
-                    point.hitPosition ? point.hitPosition->y : 0.0F,
-                    point.hitPosition ? point.hitPosition->z : 0.0F);
-            }
-
-            evaluation->candidates.push_back(std::move(candidate));
+        MeasureAnchorLOS();
+        if (!initialPresetSelectionDone_) {
+            activePresetID_ = candidateSelector_.SelectInitial(visibilityEvaluation_->candidates);
+            initialPresetSelectionDone_ = true;
         }
-
-        activePresetID_ = candidateSelector_.SelectInitial(
-            evaluation->candidates,
-            a_preferredPresetID);
+        const auto exists = [&](std::string_view a_id) {
+            return std::ranges::any_of(visibilityEvaluation_->candidates,
+                [&](const auto& a_candidate) { return a_candidate.presetID == a_id; });
+        };
+        if (!a_preferredPresetID.empty() && exists(a_preferredPresetID)) {
+            activePresetID_ = a_preferredPresetID;
+        } else if (activePresetID_ && !exists(*activePresetID_)) {
+            activePresetID_.reset();
+        }
+        auto evaluation = std::make_shared<core::VisibilityEvaluationSnapshot>(*visibilityEvaluation_);
         evaluation->selectedPresetID = activePresetID_;
-
-        const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now() - startedAt);
-        logger::info(
-            "Visibility evaluation completed: {} preset(s), {} physics ray(s), {:.3f} ms, selected={}",
-            evaluation->candidates.size(),
-            rayCount,
-            static_cast<double>(elapsed.count()) / 1000.0,
-            activePresetID_ ? *activePresetID_ : "none");
-
         visibilityEvaluation_ = std::move(evaluation);
         if (debugVisualization_) {
             debugVisualization_->ShowVisibility(visibilityEvaluation_);
         }
-
-        if (!activePresetID_) {
-            static_cast<void>(ReleaseCamera("no preset can show every participant"sv));
-            PublishPreviewFeedback(false, "No camera preset can show every participant");
-        }
         return true;
     }
 
-    bool SceneCamera::SelectPresetStep(int a_direction)
+    bool SceneCamera::SelectPresetStep(int a_direction, bool& a_poseApplied)
     {
+        a_poseApplied = false;
         if (!presetSwitchEnabled_.load(std::memory_order_acquire) ||
-            !activePresetID_ || !visibilityEvaluation_ || a_direction == 0) {
+            !visibilityEvaluation_ || a_direction == 0) {
             return true;
         }
 
         const auto nextPresetID = candidateSelector_.Step(
-            visibilityEvaluation_->candidates, *activePresetID_, a_direction);
-        if (!nextPresetID || *nextPresetID == *activePresetID_) {
+            visibilityEvaluation_->candidates, activePresetID_.value_or(""), a_direction);
+        if (!nextPresetID || nextPresetID == activePresetID_) {
             return true;
         }
 
@@ -652,7 +831,11 @@ namespace ssc
             debugVisualization_->ShowVisibility(visibilityEvaluation_);
         }
         logger::info("Camera preset cut to '{}'", *nextPresetID);
-        return ApplyTransform(preset->transform, false, 0);
+        if (!ApplyTransform(preset->transform, false, 0)) {
+            return false;
+        }
+        a_poseApplied = true;
+        return true;
     }
 
     bool SceneCamera::ApplyTransform(
@@ -769,17 +952,23 @@ namespace ssc
         });
     }
 
-    bool SceneCamera::ReleaseCamera(std::string_view a_reason)
+    bool SceneCamera::ReleaseCamera(
+        std::string_view a_reason,
+        bool a_requestResetOnFailure)
     {
         if (cameraControl_ && cameraControl_->OwnsCamera()) {
             const auto releaseResult = cameraControl_->Release();
             if (releaseResult == runtime::CameraReleaseResult::kWrongThread) {
-                resetRequested_.store(true, std::memory_order_release);
+                if (a_requestResetOnFailure) {
+                    resetRequested_.store(true, std::memory_order_release);
+                }
                 return false;
             }
             if (releaseResult == runtime::CameraReleaseResult::kFailed) {
-                logger::error("Camera release did not complete; reset will be retried");
-                resetRequested_.store(true, std::memory_order_release);
+                logger::error("Camera release did not complete; release will be retried");
+                if (a_requestResetOnFailure) {
+                    resetRequested_.store(true, std::memory_order_release);
+                }
                 return false;
             }
         }
@@ -830,7 +1019,9 @@ namespace ssc
 
     void SceneCamera::RequestPresetStep(int a_direction) noexcept
     {
-        if (!presetSwitchEnabled_.load(std::memory_order_acquire) || a_direction == 0) {
+        if (!session_.IsActive() ||
+            !presetSwitchEnabled_.load(std::memory_order_acquire) ||
+            a_direction == 0) {
             return;
         }
         presetStepRequested_.store(a_direction > 0 ? 1 : -1, std::memory_order_release);
@@ -862,12 +1053,18 @@ namespace ssc
     void SceneCamera::Clear() noexcept
     {
         participants_ = {};
-        anchorCapturePending_.store(false, std::memory_order_release);
+        sceneEvaluationPending_.store(false, std::memory_order_release);
         cameraPoseActive_.store(false, std::memory_order_release);
         presetSwitchEnabled_.store(false, std::memory_order_release);
         presetStepRequested_.store(0, std::memory_order_release);
-        anchorCaptureReadyAt_ = {};
+        sceneEvaluationReadyAt_ = {};
         activeSince_ = {};
+        debugResumePending_.store(false, std::memory_order_release);
+        debugResumeAttemptsLeft_ = 0;
+        debugResumeDeadline_ = {};
+        debugResumeNextAttempt_ = {};
+        anchorLOSTimeSeconds_ = 0.0F;
+        anchorLOSMetrics_ = {};
         if (debugVisualization_) {
             debugVisualization_->HideAnchor();
             debugVisualization_->HideVisibility();
@@ -877,6 +1074,8 @@ namespace ssc
         activePresetID_.reset();
         visibilityEvaluation_.reset();
         anchor_.reset();
+        initialPresetSelectionDone_ = false;
+        anchorInputUnavailable_ = false;
         session_.Clear();
         PublishPreviewFeedback(false, "No active player scene");
     }

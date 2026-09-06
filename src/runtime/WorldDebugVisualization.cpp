@@ -1,23 +1,20 @@
+#include "core/CandidateSelection.h"
 #include "runtime/WorldDebugVisualization.h"
 
-#if defined(SSC_ENABLE_VISIBILITY_DEBUG)
+#include "runtime/EditHotkeySettings.h"
+
 #include <SKSEMenuFramework.h>
-#endif
 
 namespace ssc::runtime
 {
     namespace
     {
-        constexpr auto kArrowModel = "marker_arrow.nif"sv;
-        constexpr float kArrowLength = 32.0F;
-        constexpr float kEffectLifetime = 24.0F * 60.0F * 60.0F;
-        constexpr float kMinimumModelDiameter = 0.001F;
-
-#if defined(SSC_ENABLE_VISIBILITY_DEBUG)
         constexpr float kMinimumMenuFrameworkVersion = 3.4F;
         constexpr float kProjectionTolerance = 9.99999975e-06F;
         constexpr float kLineThickness = 2.0F;
         constexpr float kPointRadius = 5.0F;
+        constexpr float kCandidateRadius = 7.0F;
+        constexpr float kAnchorLength = 32.0F;
         constexpr float kNormalLength = 24.0F;
 
         [[nodiscard]] constexpr ImGuiMCP::ImU32 Color(
@@ -98,30 +95,22 @@ namespace ssc::runtime
             core::VisibilityPoint a_point,
             ImGuiMCP::ImU32 a_color) noexcept
         {
-            const ImGuiMCP::ImVec2 top{ a_position.x, a_position.y - kPointRadius };
-            const ImGuiMCP::ImVec2 bottomLeft{
-                a_position.x - kPointRadius, a_position.y + kPointRadius };
-            const ImGuiMCP::ImVec2 bottomRight{
-                a_position.x + kPointRadius, a_position.y + kPointRadius };
             switch (a_point) {
-            case core::VisibilityPoint::kFace:
+            case core::VisibilityPoint::kBodyCenter:
+            case core::VisibilityPoint::kAnchor:
+            case core::VisibilityPoint::kAnchorTopLeft:
+            case core::VisibilityPoint::kAnchorTopRight:
+            case core::VisibilityPoint::kAnchorBottomLeft:
+            case core::VisibilityPoint::kAnchorBottomRight:
                 ImGuiMCP::ImDrawListManager::AddCircle(
                     a_drawList, a_position, kPointRadius, a_color, 12, kLineThickness);
                 break;
-            case core::VisibilityPoint::kChest:
-                ImGuiMCP::ImDrawListManager::AddRect(
-                    a_drawList,
-                    { a_position.x - kPointRadius, a_position.y - kPointRadius },
-                    { a_position.x + kPointRadius, a_position.y + kPointRadius },
-                    a_color,
-                    0.0F,
-                    ImGuiMCP::ImDrawFlags_None,
-                    kLineThickness);
-                break;
-            case core::VisibilityPoint::kWaist:
-                ImGuiMCP::ImDrawListManager::AddTriangle(
-                    a_drawList, top, bottomRight, bottomLeft, a_color, kLineThickness);
-                break;
+            }
+            if (a_point != core::VisibilityPoint::kBodyCenter &&
+                a_point != core::VisibilityPoint::kAnchor) {
+                ImGuiMCP::ImDrawListManager::AddText(
+                    a_drawList, { a_position.x + 7.0F, a_position.y - 14.0F }, a_color,
+                    core::VisibilityPointName(a_point).data());
             }
         }
 
@@ -143,69 +132,10 @@ namespace ssc::runtime
                 red,
                 kLineThickness);
         }
-#endif
 
-        [[nodiscard]] float ScaleModelToDiameter(
-            std::string_view a_model,
-            float a_targetDiameter,
-            float a_fallbackScale) noexcept
+        [[nodiscard]] core::Vec3 ToCore(const Vec3& a_value) noexcept
         {
-            try {
-                RE::NiPointer<RE::NiNode> model;
-                const RE::BSModelDB::DBTraits::ArgsType loadArguments;
-                const auto result = RE::BSModelDB::Demand(
-                    a_model.data(), model, loadArguments);
-                if (result != RE::BSResource::ErrorCode::kNone || !model) {
-                    logger::warn("Cannot inspect debug marker model '{}' (error {})",
-                        a_model,
-                        std::to_underlying(result));
-                    return a_fallbackScale;
-                }
-
-                RE::NiUpdateData updateData{
-                    RE::Main::QFrameAnimTime(),
-                    RE::NiUpdateData::Flag::kDirty,
-                };
-                model->Update(updateData);
-                const auto modelDiameter = model->worldBound.radius * 2.0F;
-                if (!std::isfinite(modelDiameter) || modelDiameter < kMinimumModelDiameter) {
-                    logger::warn("Debug marker model '{}' has no usable bound", a_model);
-                    return a_fallbackScale;
-                }
-
-                return a_targetDiameter / modelDiameter;
-            } catch (...) {
-                return a_fallbackScale;
-            }
-        }
-
-        void ExpireEffect(RE::NiPointer<RE::BSTempEffectParticle>& a_effect) noexcept
-        {
-            if (!a_effect) {
-                return;
-            }
-
-            try {
-                a_effect->lifetime = 0.0F;
-                a_effect->age = 0.0F;
-                a_effect->Detach();
-            } catch (...) {
-            }
-            a_effect.reset();
-        }
-
-        [[nodiscard]] bool PrepareLoadedEffect(RE::BSTempEffectParticle* a_effect) noexcept
-        {
-            try {
-                if (!a_effect || !a_effect->particleObject) {
-                    return false;
-                }
-                a_effect->particleObject->CullNode(false);
-                a_effect->particleObject->SetCollisionLayer(RE::COL_LAYER::kNonCollidable);
-                return true;
-            } catch (...) {
-                return false;
-            }
+            return { a_value.x, a_value.y, a_value.z };
         }
     }
 
@@ -217,184 +147,80 @@ namespace ssc::runtime
 
     bool WorldDebugVisualization::Register()
     {
-#if defined(SSC_ENABLE_VISIBILITY_DEBUG)
+        auto* self = GetSingleton();
+        self->registered_.store(false, std::memory_order_release);
+        if (!SKSEMenuFramework::IsInstalled()) {
+            logger::info("SKSE Menu Framework not installed; debug overlay disabled");
+            return false;
+        }
         const auto version = SKSEMenuFramework::GetMenuFrameworkVersion();
         if (version < kMinimumMenuFrameworkVersion) {
-            logger::warn("Visibility debug overlay disabled: SKSE Menu Framework is unavailable");
+            logger::warn("Debug overlay disabled: SKSE Menu Framework is unavailable");
             return false;
         }
         const auto registerHudElement = GetMenuFrameworkFunction<
             SKSEMenuFramework::Model::RegisterHudElementFuction>("RegisterHudElement");
         if (!registerHudElement) {
-            logger::error("Visibility debug overlay disabled: HUD registration API is unavailable");
+            logger::error("Debug overlay disabled: HUD registration API is unavailable");
             return false;
         }
         static auto* hudElement = SKSEMenuFramework::AddHudElement(RenderVisibility);
         if (!hudElement) {
-            logger::error("Visibility debug overlay registration failed");
+            logger::error("Debug overlay registration failed");
             return false;
         }
-        logger::info("Visibility debug overlay registered");
-#endif
+        self->registered_.store(true, std::memory_order_release);
+        logger::info("Debug overlay registered");
         return true;
     }
 
-    bool WorldDebugVisualization::CreateMarker(
-        const Vec3& a_position,
-        const Vec3& a_forward) noexcept
+    bool WorldDebugVisualization::Available() const noexcept
     {
-#if defined(SSC_ENABLE_DEBUG_ANCHOR)
-        try {
-            auto* player = RE::PlayerCharacter::GetSingleton();
-            auto* cell = player ? player->GetParentCell() : nullptr;
-            if (!cell) {
-                logger::warn("Cannot create debug anchor marker: player cell is unavailable");
-                return false;
-            }
-
-            const RE::NiPoint3 position{ a_position.x, a_position.y, a_position.z };
-            RE::NiMatrix3 arrowRotation;
-            arrowRotation.MakeZRotation(std::atan2(a_forward.x, a_forward.y));
-
-            const auto arrowScale = ScaleModelToDiameter(kArrowModel, kArrowLength, 0.25F);
-
-            arrow_ = RE::NiPointer<RE::BSTempEffectParticle>{ cell->PlaceParticleEffect(
-                kEffectLifetime,
-                kArrowModel.data(),
-                arrowRotation,
-                position,
-                arrowScale,
-                0,
-                nullptr) };
-
-            if (!arrow_) {
-                logger::warn("Cannot create debug anchor arrow effect");
-                DestroyMarker();
-                return false;
-            }
-
-            arrowPrepared_ = PrepareLoadedEffect(arrow_.get());
-            logger::info(
-                "Debug anchor marker created at ({:.2f}, {:.2f}, {:.2f}), forward ({:.3f}, {:.3f}, {:.3f})",
-                a_position.x,
-                a_position.y,
-                a_position.z,
-                a_forward.x,
-                a_forward.y,
-                a_forward.z);
-            return true;
-        } catch (const std::exception& exception) {
-            try {
-                logger::warn("Cannot create debug anchor marker: {}", exception.what());
-            } catch (...) {
-            }
-            DestroyMarker();
-            return false;
-        } catch (...) {
-            DestroyMarker();
-            return false;
-        }
-#else
-        static_cast<void>(a_position);
-        static_cast<void>(a_forward);
-        return true;
-#endif
-    }
-
-    bool WorldDebugVisualization::UpdateMarker(
-        const Vec3& a_position,
-        const Vec3& a_forward) noexcept
-    {
-#if defined(SSC_ENABLE_DEBUG_ANCHOR)
-        try {
-            auto* player = RE::PlayerCharacter::GetSingleton();
-            auto* cell = player ? player->GetParentCell() : nullptr;
-            if (!arrow_ || !cell || arrow_->cell != cell) {
-                return false;
-            }
-
-            RE::NiMatrix3 arrowRotation;
-            arrowRotation.MakeZRotation(std::atan2(a_forward.x, a_forward.y));
-            arrow_->particleEffectTransform.translate = {
-                a_position.x, a_position.y, a_position.z };
-            arrow_->particleEffectTransform.rotate = arrowRotation;
-
-            if (arrow_->particleObject) {
-                arrow_->particleObject->local = arrow_->particleEffectTransform;
-                RE::NiUpdateData updateData{
-                    RE::Main::QFrameAnimTime(),
-                    RE::NiUpdateData::Flag::kDirty,
-                };
-                arrow_->particleObject->Update(updateData);
-            }
-            arrowPrepared_ = PrepareLoadedEffect(arrow_.get());
-
-            logger::info(
-                "Debug anchor marker moved to ({:.2f}, {:.2f}, {:.2f}), forward ({:.3f}, {:.3f}, {:.3f})",
-                a_position.x,
-                a_position.y,
-                a_position.z,
-                a_forward.x,
-                a_forward.y,
-                a_forward.z);
-            return true;
-        } catch (const std::exception& exception) {
-            try {
-                logger::warn("Cannot update debug anchor marker: {}", exception.what());
-            } catch (...) {
-            }
-            return false;
-        } catch (...) {
-            return false;
-        }
-#else
-        static_cast<void>(a_position);
-        static_cast<void>(a_forward);
-        return true;
-#endif
+        return registered_.load(std::memory_order_acquire);
     }
 
     bool WorldDebugVisualization::ShowAnchor(
         const Vec3& a_position,
-        const Vec3& a_forward) noexcept
+        const Vec3& a_forward,
+        const Vec3& a_targetPosition) noexcept
     {
-#if defined(SSC_ENABLE_DEBUG_ANCHOR)
-        if (UpdateMarker(a_position, a_forward)) {
+        if (!Enabled()) {
             return true;
         }
-        DestroyMarker();
-        return CreateMarker(a_position, a_forward);
-#else
-        static_cast<void>(a_position);
-        static_cast<void>(a_forward);
+        std::scoped_lock lock{ anchorMutex_ };
+        anchor_ = AnchorDisplay{ a_position, a_forward, a_targetPosition };
         return true;
-#endif
     }
 
     void WorldDebugVisualization::Update() noexcept
-    {
-#if defined(SSC_ENABLE_DEBUG_ANCHOR)
-        if (arrow_ && !arrowPrepared_) {
-            arrowPrepared_ = PrepareLoadedEffect(arrow_.get());
-        }
-#endif
-    }
+    {}
 
     void WorldDebugVisualization::HideAnchor() noexcept
     {
-#if defined(SSC_ENABLE_DEBUG_ANCHOR)
-        DestroyMarker();
-#endif
+        std::scoped_lock lock{ anchorMutex_ };
+        anchor_.reset();
     }
 
     void WorldDebugVisualization::ShowVisibility(
         std::shared_ptr<const core::VisibilityEvaluationSnapshot> a_evaluation) noexcept
     {
+        const auto previous = evaluation_.load(std::memory_order_acquire);
+        const auto previousIndex = selectedCandidate_.load(std::memory_order_acquire);
         evaluation_.store(std::move(a_evaluation), std::memory_order_release);
         const auto snapshot = evaluation_.load(std::memory_order_acquire);
         const auto count = snapshot ? snapshot->candidates.size() : 0;
         if (count == 0) {
             selectedCandidate_.store(0, std::memory_order_release);
+            return;
+        }
+        if (snapshot->anchorLOS && previous && previousIndex < previous->candidates.size()) {
+            const auto& previousID = previous->candidates[previousIndex].presetID;
+            const auto retained = std::ranges::find(
+                snapshot->candidates, previousID, &core::CameraCandidateVisibility::presetID);
+            selectedCandidate_.store(
+                retained != snapshot->candidates.end() ?
+                    static_cast<std::size_t>(std::distance(snapshot->candidates.begin(), retained)) : 0,
+                std::memory_order_release);
             return;
         }
         const auto selected = snapshot->selectedPresetID ?
@@ -404,20 +230,46 @@ namespace ssc::runtime
             std::ranges::find_if(
                 snapshot->candidates,
                 [](const auto& a_candidate) { return a_candidate.usable; });
-        if (selected != snapshot->candidates.end()) {
-            selectedCandidate_.store(
+        selectedCandidate_.store(
+            selected != snapshot->candidates.end() ?
                 static_cast<std::size_t>(
-                    std::distance(snapshot->candidates.begin(), selected)),
-                std::memory_order_release);
-        } else {
-            selectedCandidate_.store(0, std::memory_order_release);
-        }
+                    std::distance(snapshot->candidates.begin(), selected)) : 0,
+            std::memory_order_release);
     }
 
     void WorldDebugVisualization::HideVisibility() noexcept
     {
         evaluation_.store(nullptr, std::memory_order_release);
         selectedCandidate_.store(0, std::memory_order_release);
+    }
+
+    bool WorldDebugVisualization::Enabled() const noexcept
+    {
+        return Available() && EditHotkeySettings::GetSingleton()->DebugMode();
+    }
+
+    void WorldDebugVisualization::StepCandidate(int a_direction) noexcept
+    {
+        const auto snapshot = evaluation_.load(std::memory_order_acquire);
+        if (!snapshot || snapshot->candidates.empty() || a_direction == 0) {
+            return;
+        }
+        const auto count = snapshot->candidates.size();
+        const auto current = std::min(
+            selectedCandidate_.load(std::memory_order_acquire), count - 1);
+        const auto nextID = core::CandidateSelector{}.Step(
+            snapshot->candidates, snapshot->candidates[current].presetID, a_direction);
+        if (!nextID) {
+            return;
+        }
+        const auto next = static_cast<std::size_t>(std::ranges::find(
+            snapshot->candidates, *nextID, &core::CameraCandidateVisibility::presetID) -
+            snapshot->candidates.begin());
+        selectedCandidate_.store(next, std::memory_order_release);
+        logger::info("Debug preset selected: '{}' ({}/{})",
+            snapshot->candidates[next].presetID,
+            next + 1,
+            count);
     }
 
     void WorldDebugVisualization::SetOccludedSegmentsVisible(bool a_visible) noexcept
@@ -440,8 +292,22 @@ namespace ssc::runtime
             selectedCandidate_.load(std::memory_order_acquire),
             snapshot->candidates.size() - 1);
         const auto& candidate = snapshot->candidates[selected];
+        if (snapshot->anchorLOS) {
+            const auto cornersVisible = std::ranges::count_if(candidate.points, [](const auto& point) {
+                return point.point != core::VisibilityPoint::kAnchor &&
+                    point.status == core::VisibilityPointStatus::kVisible;
+            });
+            const auto unavailable = std::ranges::count_if(candidate.points, [](const auto& point) {
+                return point.status == core::VisibilityPointStatus::kUnavailable;
+            });
+            return fmt::format("{} ({}/{}, center: {}, corners: {}/4, unavailable: {})",
+                candidate.presetID, selected + 1, snapshot->candidates.size(),
+                candidate.points.empty() ? "unavailable" :
+                    core::VisibilityPointStatusName(candidate.points.front().status),
+                cornersVisible, unavailable);
+        }
         return fmt::format(
-            "{} ({}/{}, {}/{} points, {})",
+            "{} ({}/{}, {}/{} centers, {})",
             candidate.presetID,
             selected + 1,
             snapshot->candidates.size(),
@@ -452,10 +318,8 @@ namespace ssc::runtime
 
     void __stdcall WorldDebugVisualization::RenderVisibility()
     {
-#if defined(SSC_ENABLE_VISIBILITY_DEBUG)
         auto* self = GetSingleton();
-        const auto snapshot = self->evaluation_.load(std::memory_order_acquire);
-        if (!snapshot || snapshot->candidates.empty()) {
+        if (!self->Enabled()) {
             return;
         }
 
@@ -466,10 +330,70 @@ namespace ssc::runtime
             return;
         }
 
+        std::optional<AnchorDisplay> anchor;
+        {
+            std::scoped_lock lock{ self->anchorMutex_ };
+            anchor = self->anchor_;
+        }
+        if (anchor) {
+            constexpr auto orange = Color(255, 165, 50, 240);
+            if (const auto screen = Project(*niCamera, ToCore(anchor->targetPosition))) {
+                ImGuiMCP::ImDrawListManager::AddCircleFilled(
+                    drawList, *screen, kPointRadius, orange, 12);
+                ImGuiMCP::ImDrawListManager::AddText(
+                    drawList, { screen->x + 8.0F, screen->y - 18.0F }, orange, "Torso target");
+            }
+            constexpr auto cyan = Color(55, 220, 245, 240);
+            const auto anchorPosition = ToCore(anchor->position);
+            const core::Vec3 forwardEnd{
+                anchorPosition.x + anchor->forward.x * kAnchorLength,
+                anchorPosition.y + anchor->forward.y * kAnchorLength,
+                anchorPosition.z + anchor->forward.z * kAnchorLength,
+            };
+            DrawLine(drawList, *niCamera, anchorPosition, forwardEnd, cyan);
+            if (const auto screen = Project(*niCamera, anchorPosition)) {
+                ImGuiMCP::ImDrawListManager::AddCircleFilled(
+                    drawList, *screen, kPointRadius, cyan, 12);
+                ImGuiMCP::ImDrawListManager::AddText(
+                    drawList, { screen->x + 8.0F, screen->y + 5.0F }, cyan, "Anchor");
+            }
+        }
+
+        const auto snapshot = self->evaluation_.load(std::memory_order_acquire);
+        if (snapshot && snapshot->anchorLOS) {
+            const auto& metrics = *snapshot->anchorLOS;
+            const auto label = fmt::format(
+                "Anchor LOS camera-side 32x18 (5 rays/preset) / {:.2f}s / sample {} / {} presets / {} physics rays\n"
+                "Batch {:.4f} ms | LOS {:.4f} ms | avg {:.4f} ms | max {:.4f} ms\n"
+                "Estimated {:.4f} ms/s (excludes logging/HUD)\n{}",
+                metrics.intervalSeconds, metrics.sampleCount, snapshot->candidates.size(),
+                metrics.rayQueryCount, metrics.lastMilliseconds, metrics.traceMilliseconds,
+                metrics.averageMilliseconds, metrics.maximumMilliseconds,
+                metrics.averageMilliseconds / metrics.intervalSeconds,
+                self->SelectedCandidateLabel());
+            ImGuiMCP::ImDrawListManager::AddText(
+                drawList, { 20.0F, 80.0F }, Color(240, 240, 240, 255), label.c_str());
+        }
+        if (!snapshot || snapshot->candidates.empty()) {
+            return;
+        }
         const auto selected = std::min(
             self->selectedCandidate_.load(std::memory_order_acquire),
             snapshot->candidates.size() - 1);
         const auto& candidate = snapshot->candidates[selected];
+        constexpr auto magenta = Color(235, 90, 235, 240);
+        if (candidate.pose) {
+            if (const auto screen = Project(*niCamera, candidate.pose->position)) {
+                ImGuiMCP::ImDrawListManager::AddCircleFilled(
+                    drawList, *screen, kCandidateRadius, magenta, 16);
+                ImGuiMCP::ImDrawListManager::AddText(
+                    drawList,
+                    { screen->x + 10.0F, screen->y + 6.0F },
+                    magenta,
+                    candidate.presetID.c_str());
+            }
+        }
+
         const auto showOccludedSegments =
             self->showOccludedSegments_.load(std::memory_order_acquire);
         constexpr auto green = Color(70, 220, 90, 230);
@@ -478,14 +402,27 @@ namespace ssc::runtime
         constexpr auto yellow = Color(245, 210, 65, 230);
 
         for (const auto& point : candidate.points) {
+            if (snapshot->anchorLOS && candidate.pose) {
+                if (const auto screen = Project(*niCamera, point.rayStart)) {
+                    const auto color = point.status == core::VisibilityPointStatus::kVisible ? green :
+                        (point.status == core::VisibilityPointStatus::kUnavailable ? gray : red);
+                    DrawPointMarker(drawList, *screen, point.point, color);
+                }
+            }
             if (point.status == core::VisibilityPointStatus::kUnavailable) {
+                if (snapshot->anchorLOS && candidate.pose) {
+                    if (const auto screen = Project(*niCamera, point.rayStart)) {
+                        ImGuiMCP::ImDrawListManager::AddText(
+                            drawList, { screen->x + 7.0F, screen->y + 4.0F }, gray, "unavailable");
+                    }
+                }
                 continue;
             }
 
             const auto targetScreen = Project(*niCamera, point.target);
             if (point.status == core::VisibilityPointStatus::kVisible) {
                 DrawLine(drawList, *niCamera, point.rayStart, point.target, green);
-                if (targetScreen) {
+                if (targetScreen && !snapshot->anchorLOS) {
                     DrawPointMarker(drawList, *targetScreen, point.point, green);
                 }
                 continue;
@@ -500,7 +437,7 @@ namespace ssc::runtime
             }
             if (showOccludedSegments) {
                 DrawLine(drawList, *niCamera, *point.hitPosition, point.target, gray);
-                if (targetScreen) {
+                if (targetScreen && !snapshot->anchorLOS) {
                     DrawPointMarker(drawList, *targetScreen, point.point, gray);
                 }
             }
@@ -513,21 +450,5 @@ namespace ssc::runtime
                 DrawLine(drawList, *niCamera, *point.hitPosition, normalEnd, yellow);
             }
         }
-#endif
-    }
-
-    void WorldDebugVisualization::DestroyMarker() noexcept
-    {
-#if defined(SSC_ENABLE_DEBUG_ANCHOR)
-        const auto hadMarker = static_cast<bool>(arrow_);
-        ExpireEffect(arrow_);
-        arrowPrepared_ = false;
-        if (hadMarker) {
-            try {
-                logger::info("Debug anchor marker removed");
-            } catch (...) {
-            }
-        }
-#endif
     }
 }

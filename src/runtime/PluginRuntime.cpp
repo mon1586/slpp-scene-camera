@@ -31,11 +31,7 @@ namespace ssc::runtime
         auto log = std::make_shared<spdlog::logger>("global log"s, std::move(sink));
         spdlog::set_default_logger(std::move(log));
         spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] %v");
-#if defined(SSC_ENABLE_VISIBILITY_DEBUG)
-        spdlog::set_level(spdlog::level::debug);
-#else
         spdlog::set_level(spdlog::level::info);
-#endif
         spdlog::flush_on(spdlog::level::info);
     }
 
@@ -86,12 +82,18 @@ namespace ssc::runtime
                 const auto settingsResult =
                     EditHotkeySettings::GetSingleton()->LoadFromFile(settingsPath);
                 if (settingsResult.succeeded) {
-                    const auto keyCode = EditHotkeySettings::GetSingleton()->EditHotkey();
-                    logger::info("Preset edit hotkey loaded as {} ({:#04x})",
+                    const auto* settings = EditHotkeySettings::GetSingleton();
+                    const auto keyCode = settings->EditHotkey();
+                    spdlog::set_level(
+                        settings->DebugMode() &&
+                            WorldDebugVisualization::GetSingleton()->Available() ?
+                        spdlog::level::debug : spdlog::level::info);
+                    logger::info("Settings loaded: edit hotkey {} ({:#04x}), debug mode {}",
                         EditHotkeyName(keyCode),
-                        keyCode);
+                        keyCode,
+                        settings->DebugMode() ? "on" : "off");
                 } else {
-                    logger::error("Could not load preset edit hotkey from {}: {}",
+                    logger::error("Could not load settings from {}: {}",
                         settingsPath.string(),
                         settingsResult.error);
                 }

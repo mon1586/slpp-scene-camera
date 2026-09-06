@@ -20,7 +20,7 @@ SexLab P+が送るSKSE `ModCallbackEvent`を購読し、次の未接頭辞イベ
 
 `HookAnimationStart`、`HookAnimationChange`、`HookAnimationEnd`も互換入力として同じRuntime通知へ変換する。
 
-`AnimationChange`は変更後のnode transformが利用可能になったことを保証しない。Runtimeは受信直後に通知し、待機や再計算は行わない。
+`AnimationChange`は変更後の姿勢が利用可能になったことを保証しない。Runtimeは受信直後に通知し、待機や再計算は行わない。
 
 ### Scene key
 
@@ -31,7 +31,7 @@ Runtime通知は、送信元QuestのForm IDとP+ thread IDを組み合わせたs
 - 互換入力として、有限で`int32`範囲内の`numArg`も受け付ける。
 - event名、送信元、thread IDのいずれかが不正な入力は通知しない。
 
-## 参加者とnode入力
+## 参加者と身体中心入力
 
 開始通知を`src`へ渡す前に、Runtimeは送信元QuestのReference Aliasから参加者を収集し、Runtime内部のopaqueなsnapshotとして通知へ付加する。ゲーム固有のhandle型は`src`へ公開しない。
 
@@ -40,7 +40,9 @@ Runtime通知は、送信元QuestのForm IDとP+ thread IDを組み合わせたs
 - 最大32人とし、超過時もプレイヤーを優先して保持する。
 - 収集とActorHandle化はゲームスレッドで行う。
 
-`src`からアンカー入力を要求された場合、snapshot内の各Actorから`NPC Pelvis [Pelv]`のworld位置を取得する。プレイヤーについては同じPelvis nodeのworld回転からbody forwardも取得し、Actor yawから得た水平前方とともに返す。どちらを採用するかはCoreが決める。必要なActor、3D、Pelvis node、プレイヤーのいずれかを取得できない場合は入力を返さない。
+`src`からアンカー入力を要求された場合、snapshot内のプレイヤーを取得し、現在の姿勢における腰と胸の中間とActorの水平前方を返す。他の参加者の3D有無、骨格、位置はアンカー入力へ影響させない。snapshot内のプレイヤーActor、腰と胸それぞれの有限で有効な位置、または有効な水平前方を取得できない場合は入力を返さない。
+
+`src`から可視性入力を要求された場合、snapshot内の各参加者について、現在の3D全体を囲むワールド境界の中心を身体中心として一つ返す。Actorまたは有効な身体中心を取得できない参加者は、評価不能として識別できる入力を返す。
 
 アニメーション変更時は参加者snapshotを作り直さず、開始時に保持したsnapshotを使う。参加者構成の変更は現在の対象外とする。
 
@@ -83,19 +85,13 @@ camera-state update hookは、最初のプレイヤー参加scene開始時に一
 
 ## デバッグ可視化
 
-`SSC_ENABLE_DEBUG_ANCHOR`が有効なビルドでは、`src`から渡されたアンカー位置とforwardをRuntimeが矢印で表示する。
+デバッグモード中は、`src`から渡されたアンカー、プリセット候補位置、可視性ray、身体中心、hit位置、hit法線を現在の画面へ投影して表示する。
 
-- Skyrim標準の`marker_arrow.nif`を使用するため、ESPと専用assetは追加しない。
-- 矢印の長さは32 Skyrim unitを目標とし、ロードしたmodelのboundからscaleを決定する。
-- 物理参照ではなく一時エフェクトとして生成し、collision nodeは`NonCollidable` layerへ変更する。非同期cloneが未完了ならactive scene中の更新で再試行する。
-- 初回計算時に生成し、アンカー再計算時は同じエフェクトの位置と回転を更新する。再生成はセル変更またはエフェクト喪失時だけ行う。
-- シーン終了またはreset時にエフェクトを破棄する。
-- Runtimeは位置の決定や表示タイミングの判断を行わない。
-- modelのloadまたはエフェクトの生成・破棄に失敗した場合は警告を記録するだけとし、アンカー計算とシーンカメラ手続きを継続する。
-
-この可視化は開発時の確認用であり、CMake optionの既定値は`ON`とする。`SSC_ENABLE_DEBUG_ANCHOR=OFF`ではRuntimeへの表示要求を副作用のない成功として扱う。
-
-シーン中にdebug矢印を表示した状態でセーブしてロードする実機確認では、ライフサイクルreset後に矢印が消え、残留や複製は発生しなかった。配布ビルドではこの可視化を無効にする。
+- Runtimeはワールド座標を画面上の点と線へ変換するが、位置の決定や結果の採否は行わない。
+- アンカーは位置とforward方向を識別できる表示とする。
+- ゲーム世界へ参照、一時エフェクト、専用assetを追加しない。
+- デバッグモードがOFF、シーン終了、ロード、新規ゲーム、resetのいずれかでは表示しない。
+- 表示に失敗した場合はアンカー計算、可視性評価、シーンカメラ手続きを継続する。
 
 ## 異常時
 
@@ -110,4 +106,4 @@ camera-state update hookは、最初のプレイヤー参加scene開始時に一
 - `StageStart`を独立した更新境界として通知すること。
 - P+内部の`OnAnimationSynchronized`をhookまたは改変して完了通知を追加すること。
 - `AnimationChange`以外の経路でP+内部のactive sceneが変更されたことを推測すること。
-- node transformの安定をRuntime側で監視すること。
+- 身体中心の揺れをRuntime側で平滑化すること。Runtimeは補正前の身体中心とポーズ時間を含まない更新間隔を渡し、撮影アンカーの平滑化はアンカー仕様に従う。

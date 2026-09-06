@@ -3,15 +3,16 @@
 #include "core/CameraTypes.h"
 
 #include <optional>
-#include <span>
 
 namespace ssc::core
 {
+    [[nodiscard]] Vec3 SmoothAnchorPosition(
+        const Vec3& a_previous, const Vec3& a_target, float a_deltaSeconds) noexcept;
+
     struct SceneAnchorInput
     {
-        std::span<const Vec3> participantPelvisPositions;
-        std::optional<Vec3> playerPelvisForward;
-        std::optional<Vec3> playerActorForward;
+        Vec3 bodyCenter;
+        Vec3 playerActorForward;
     };
 
     struct SceneAnchor

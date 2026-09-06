@@ -28,12 +28,15 @@ namespace ssc::runtime
         [[nodiscard]] EditHotkeySettingsResult LoadFromFile(
             const std::filesystem::path& a_path);
         [[nodiscard]] EditHotkeySettingsResult SetEditHotkey(std::uint32_t a_keyCode);
+        [[nodiscard]] EditHotkeySettingsResult SetDebugMode(bool a_enabled);
         [[nodiscard]] std::uint32_t EditHotkey() const noexcept;
+        [[nodiscard]] bool DebugMode() const noexcept;
 
     private:
         std::mutex mutex_;
         std::filesystem::path storagePath_;
         bool loaded_{ false };
         std::atomic_uint32_t editHotkey_{ kDefaultEditHotkey };
+        std::atomic_bool debugMode_{ false };
     };
 }

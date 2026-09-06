@@ -35,7 +35,7 @@ namespace ssc::core
             return std::nullopt;
         }
 
-        std::size_t currentIndex = 0;
+        std::size_t currentIndex = a_direction > 0 ? a_candidates.size() - 1 : 0;
         for (std::size_t index = 0; index < a_candidates.size(); ++index) {
             if (a_candidates[index].presetID == a_currentPresetID) {
                 currentIndex = index;

@@ -226,9 +226,19 @@ namespace ssc::ui
             return true;
         }
 
-        void CancelDraft()
+        void CancelDraft(bool a_closing = false)
         {
             if (state.creating) {
+                if (a_closing) {
+                    state.selectedID.clear();
+                    SetIDBuffer({});
+                    state.savedTransform = {};
+                    state.draftTransform = {};
+                    state.draftRevision = 0;
+                    state.creating = false;
+                    state.dirty = false;
+                    return;
+                }
                 SelectFirstPreset();
                 return;
             }
@@ -318,7 +328,7 @@ namespace ssc::ui
             }
             ImGuiMCP::SameLine();
             if (ImGuiMCP::Button("Discard and continue")) {
-                CancelDraft();
+                CancelDraft(state.pendingAction == PendingAction::kClose);
                 RunPendingAction();
                 ImGuiMCP::CloseCurrentPopup();
             }
@@ -426,6 +436,7 @@ namespace ssc::ui
                 if (!editorOpen &&
                     state.editHotkeyRequested.exchange(false, std::memory_order_acq_rel)) {
                     if (const auto currentPresetID = CurrentPresetID(feedback.get());
+                        !runtime::WorldDebugVisualization::GetSingleton()->Enabled() &&
                         CanOpenCurrentPresetEditor(feedback.get(), blockingWindowOpen) &&
                         currentPresetID) {
                         OpenEditor(*currentPresetID);
@@ -469,8 +480,12 @@ namespace ssc::ui
                     return;
                 }
 
-                const auto currentPresetID = CurrentPresetID(feedback.get());
-                if (currentPresetID) {
+                if (runtime::WorldDebugVisualization::GetSingleton()->Enabled()) {
+                    const auto label =
+                        runtime::WorldDebugVisualization::GetSingleton()->SelectedCandidateLabel();
+                    ImGuiMCP::Text("Debug preset: %s", label.c_str());
+                    ImGuiMCP::TextDisabled("[A/D] Inspect    SmoothCam in control");
+                } else if (const auto currentPresetID = CurrentPresetID(feedback.get())) {
                     ImGuiMCP::Text("Preset: %.*s",
                         static_cast<int>(currentPresetID->size()),
                         currentPresetID->data());
@@ -517,9 +532,11 @@ namespace ssc::ui
                 const auto editorOpen = state.window &&
                     state.window->IsOpen.load(std::memory_order_acquire);
                 const auto feedback = runtime::PresetPreviewService::GetSingleton()->Feedback();
-                const auto editHotkey =
-                    runtime::EditHotkeySettings::GetSingleton()->EditHotkey();
-                const auto canToggle = ShouldHandleEditHotkey(
+                const auto* settings = runtime::EditHotkeySettings::GetSingleton();
+                const auto editHotkey = settings->EditHotkey();
+                const auto canToggle = (editorOpen ||
+                    !runtime::WorldDebugVisualization::GetSingleton()->Enabled()) &&
+                    ShouldHandleEditHotkey(
                     keyCode,
                     editHotkey,
                     editorOpen,
@@ -626,19 +643,15 @@ namespace ssc::ui
                         if (summary.status == PresetSceneStatus::kUsable) {
                             color = { 0.30F, 0.90F, 0.38F, 1.0F };
                             status = fmt::format(
-                                "[OK] {}/{} participants, {}/{} points",
-                                summary.visibleParticipants,
-                                summary.totalParticipants,
-                                summary.visiblePoints,
-                                summary.availablePoints);
+                                "[OK] center {}, corners {}/4",
+                                core::VisibilityPointStatusName(summary.centerStatus),
+                                summary.visibleCorners);
                         } else if (summary.status == PresetSceneStatus::kBlocked) {
                             color = { 0.95F, 0.32F, 0.30F, 1.0F };
                             status = fmt::format(
-                                "[BLOCKED] {}/{} participants, {}/{} points: {}",
-                                summary.visibleParticipants,
-                                summary.totalParticipants,
-                                summary.visiblePoints,
-                                summary.availablePoints,
+                                "[BLOCKED] center {}, corners {}/4: {}",
+                                core::VisibilityPointStatusName(summary.centerStatus),
+                                summary.visibleCorners,
                                 core::CandidateFailureReasonName(summary.failureReason));
                         }
                         const auto label = fmt::format(
@@ -661,7 +674,11 @@ namespace ssc::ui
                 ImGuiMCP::Separator();
                 const auto awaitingHotkey =
                     state.awaitingEditHotkey.load(std::memory_order_acquire);
-                const auto canPreview =
+                auto* settings = runtime::EditHotkeySettings::GetSingleton();
+                auto debugMode = settings->DebugMode();
+                const auto debugModeActive = debugMode &&
+                    runtime::WorldDebugVisualization::GetSingleton()->Available();
+                const auto canPreview = !debugModeActive &&
                     CanStartDashboardPreview(feedback.get(), awaitingHotkey);
                 ImGuiMCP::BeginDisabled(!canPreview);
                 if (ImGuiMCP::Button(
@@ -677,8 +694,7 @@ namespace ssc::ui
                         feedback ? feedback->message.c_str() : "camera state unavailable");
                 }
                 ImGuiMCP::Separator();
-                const auto editHotkey =
-                    runtime::EditHotkeySettings::GetSingleton()->EditHotkey();
+                const auto editHotkey = settings->EditHotkey();
                 const auto editHotkeyName = runtime::EditHotkeyName(editHotkey);
                 ImGuiMCP::Text("Edit hotkey: %s", editHotkeyName.c_str());
                 if (ImGuiMCP::Button(awaitingHotkey ?
@@ -693,16 +709,38 @@ namespace ssc::ui
                 if (!state.hotkeyMessage.empty()) {
                     ImGuiMCP::TextWrapped("%s", state.hotkeyMessage.c_str());
                 }
-#if defined(SSC_ENABLE_VISIBILITY_DEBUG)
                 ImGuiMCP::Separator();
                 auto* debug = runtime::WorldDebugVisualization::GetSingleton();
-                const auto label = debug->SelectedCandidateLabel();
-                ImGuiMCP::Text("Visibility debug: %s", label.c_str());
-                auto showOccludedSegments = debug->OccludedSegmentsVisible();
-                if (ImGuiMCP::Checkbox("Show occluded segments", &showOccludedSegments)) {
-                    debug->SetOccludedSegmentsVisible(showOccludedSegments);
+                const auto debugAvailable = debug->Available();
+                ImGuiMCP::BeginDisabled(!debugAvailable);
+                const auto debugChanged = ImGuiMCP::Checkbox("Debug mode", &debugMode);
+                ImGuiMCP::EndDisabled();
+                if (debugChanged) {
+                    const auto result = settings->SetDebugMode(debugMode);
+                    if (result.succeeded) {
+                        spdlog::set_level(debugMode ?
+                            spdlog::level::debug : spdlog::level::info);
+                        state.hotkeyMessage = debugMode ?
+                            "Debug mode enabled; SmoothCam remains in control." :
+                            "Debug mode disabled; scene camera restored.";
+                    } else {
+                        debugMode = settings->DebugMode();
+                        state.hotkeyMessage = result.error;
+                    }
                 }
-#endif
+                if (!debugAvailable) {
+                    ImGuiMCP::TextDisabled("Debug overlay is unavailable.");
+                }
+                if (debugMode && debugAvailable) {
+                    const auto label = debug->SelectedCandidateLabel();
+                    ImGuiMCP::Text("Debug preset: %s", label.c_str());
+                    ImGuiMCP::TextDisabled("Use A / D to cycle through currently usable presets.");
+                    auto showOccludedSegments = debug->OccludedSegmentsVisible();
+                    if (ImGuiMCP::Checkbox(
+                            "Show occluded segments", &showOccludedSegments)) {
+                        debug->SetOccludedSegmentsVisible(showOccludedSegments);
+                    }
+                }
             } catch (...) {
                 logger::error("SKSE Menu Framework preset page failed");
             }
@@ -823,22 +861,20 @@ namespace ssc::ui
                     feedback->visibilityEvaluation &&
                     !feedback->visibilityEvaluation->candidates.empty()) {
                     const auto& candidate = feedback->visibilityEvaluation->candidates.front();
+                    const auto summary = SummarizePresetForScene(
+                        feedback->visibilityEvaluation.get(), candidate.presetID);
                     if (candidate.usable) {
                         ImGuiMCP::TextColored(
                             { 0.30F, 0.90F, 0.38F, 1.0F },
-                            "Visibility: usable (%zu/%zu participants, %zu/%zu points)",
-                            candidate.visibleParticipantCount,
-                            candidate.participants.size(),
-                            candidate.visiblePointCount,
-                            candidate.availablePointCount);
+                            "Visibility: usable (center %s, corners %zu/4)",
+                            core::VisibilityPointStatusName(summary.centerStatus).data(),
+                            summary.visibleCorners);
                     } else {
                         ImGuiMCP::TextColored(
                             { 0.95F, 0.32F, 0.30F, 1.0F },
-                            "Visibility: blocked (%zu/%zu participants, %zu/%zu points: %s)",
-                            candidate.visibleParticipantCount,
-                            candidate.participants.size(),
-                            candidate.visiblePointCount,
-                            candidate.availablePointCount,
+                            "Visibility: blocked (center %s, corners %zu/4: %s)",
+                            core::VisibilityPointStatusName(summary.centerStatus).data(),
+                            summary.visibleCorners,
                             core::CandidateFailureReasonName(candidate.failureReason).data());
                     }
                 }

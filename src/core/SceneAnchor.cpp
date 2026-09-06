@@ -26,50 +26,37 @@ namespace ssc::core
         }
     }
 
+    Vec3 SmoothAnchorPosition(
+        const Vec3& a_previous, const Vec3& a_target, float a_deltaSeconds) noexcept
+    {
+        if (!IsFinite(a_previous) || !IsFinite(a_target) ||
+            !std::isfinite(a_deltaSeconds) || a_deltaSeconds <= 0.0F) {
+            return a_previous;
+        }
+        constexpr float kPositionHalfLifeSeconds = 0.15F;
+        const auto weight = -std::expm1(
+            -std::log(2.0F) * a_deltaSeconds / kPositionHalfLifeSeconds);
+        return {
+            std::lerp(a_previous.x, a_target.x, weight),
+            std::lerp(a_previous.y, a_target.y, weight),
+            std::lerp(a_previous.z, a_target.z, weight),
+        };
+    }
+
     std::optional<SceneAnchor> SceneAnchorCalculator::Evaluate(
         const SceneAnchorInput& a_input) const noexcept
     {
-        if (a_input.participantPelvisPositions.empty()) {
+        if (!IsFinite(a_input.bodyCenter) || !IsFinite(a_input.playerActorForward)) {
             return std::nullopt;
         }
 
-        double sumX = 0.0;
-        double sumY = 0.0;
-        double sumZ = 0.0;
-        for (const auto& pelvis : a_input.participantPelvisPositions) {
-            if (!IsFinite(pelvis)) {
-                return std::nullopt;
-            }
-            sumX += static_cast<double>(pelvis.x);
-            sumY += static_cast<double>(pelvis.y);
-            sumZ += static_cast<double>(pelvis.z);
-        }
-
-        const auto inverseParticipantCount =
-            1.0 / static_cast<double>(a_input.participantPelvisPositions.size());
-        const Vec3 position{
-            static_cast<float>(sumX * inverseParticipantCount),
-            static_cast<float>(sumY * inverseParticipantCount),
-            static_cast<float>(sumZ * inverseParticipantCount),
-        };
-        if (!IsFinite(position)) {
-            return std::nullopt;
-        }
-
-        std::optional<Vec3> playerForward;
-        if (a_input.playerPelvisForward && IsFinite(*a_input.playerPelvisForward)) {
-            playerForward = NormalizeHorizontal(*a_input.playerPelvisForward);
-        }
-        if (!playerForward && a_input.playerActorForward &&
-            IsFinite(*a_input.playerActorForward)) {
-            playerForward = NormalizeHorizontal(*a_input.playerActorForward);
-        }
+        const auto playerForward = NormalizeHorizontal(a_input.playerActorForward);
         if (!playerForward) {
             return std::nullopt;
         }
 
         return SceneAnchor{
-            position,
+            a_input.bodyCenter,
             { -playerForward->x, -playerForward->y, 0.0F },
         };
     }
