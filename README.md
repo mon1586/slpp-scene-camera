@@ -45,6 +45,13 @@ During an active scene, both normal and Debug modes reevaluate five LOS rays per
 
 Install the contents of `dist` under `Data`. The build distributes only the DLL and PDB; `presets.json` is user-owned data and is neither supplied nor overwritten by the build. Create the first preset from the Camera Presets page. The matching log is written to the normal SKSE log directory as `SexlabSceneCamera.log`.
 
+TDM API V5 is optional. An accepted player scene start schedules a one-time
+target unlock for the next camera update. Initial framing waits for unlock
+confirmation or a two-second timeout before continuing. Temporary disable
+ownership is returned on completion or cancellation; later manual locks are
+not suppressed. `TDM RequestDisableTargetLock` / `ReleaseDisableTargetLock`
+logs report the current and API thread IDs. A thread mismatch is not bypassed.
+
 ## In-game validation
 
 The [specification coverage checklist](docs/spec-coverage.md) maps states and events, decision rules, invariants, and sequence cases to the design documents, and tracks unresolved specification gaps separately from test results.
@@ -68,5 +75,6 @@ The [specification coverage checklist](docs/spec-coverage.md) maps states and ev
 
 17. Open a new preset preview and close without saving. Confirm the pre-editor preset returns even if blocked; with no pre-editor selection, SmoothCam remains in control. A deleted pre-editor preset must not cause another preset to be selected automatically.
 18. While a scene is active, switch Debug mode off during a temporary camera-control refusal. Confirm recovery succeeds after the refusal clears, with at most three attempts spaced at least 0.5 seconds apart and within two seconds. If refusal persists, confirm the retry stops with a message, including while paused. Toggle Debug mode on/off to retry explicitly.
+19. With TDM enabled and a target locked, start a player scene. Confirm the target unlocks before initial framing, and the log shows `RequestDisableTargetLock -> OK` followed by `ReleaseDisableTargetLock -> OK (target unlocked, ...)`, with matching current/API thread IDs. A later manual lock must remain available. Also confirm normal scene startup with no target locked and with TDM disabled.
 
 The compiled DLL proves only that the native interfaces and code agree at build time. Menu behavior, input routing, camera-node behavior, and restoration still require the in-game validation above.

@@ -8,6 +8,7 @@ namespace ssc
     {
         constexpr auto kMaximumSceneDuration = std::chrono::minutes{ 30 };
         constexpr auto kAnimationChangeDelay = std::chrono::seconds{ 1 };
+        constexpr auto kTargetUnlockTimeout = std::chrono::seconds{ 2 };
         constexpr auto kDebugResumeInterval = std::chrono::milliseconds{ 500 };
         constexpr auto kDebugResumeTimeout = std::chrono::seconds{ 2 };
         constexpr unsigned kDebugResumeAttempts = 3;
@@ -58,7 +59,8 @@ namespace ssc
         runtime::PresetPreviewService& a_previewService,
         runtime::ICameraControl& a_cameraControl,
         runtime::IVisibilityProbe& a_visibilityProbe,
-        runtime::IDebugVisualization& a_debugVisualization) noexcept
+        runtime::IDebugVisualization& a_debugVisualization,
+        runtime::ITargetLockControl* a_targetLockControl) noexcept
     {
         sceneSource_ = std::addressof(a_sceneSource);
         presetProvider_ = std::addressof(a_presetProvider);
@@ -66,13 +68,15 @@ namespace ssc
         cameraControl_ = std::addressof(a_cameraControl);
         visibilityProbe_ = std::addressof(a_visibilityProbe);
         debugVisualization_ = std::addressof(a_debugVisualization);
+        targetLockControl_ = a_targetLockControl;
     }
 
     bool SceneCamera::NeedsUpdate() const noexcept
     {
         const auto previewChanged = previewService_ &&
             previewService_->Request() != appliedPreviewRequest_;
-        return session_.IsActive() ||
+        return targetUnlockQueued_.load(std::memory_order_acquire) ||
+               targetUnlockPending_.load(std::memory_order_acquire) || session_.IsActive() ||
                sceneEvaluationPending_.load(std::memory_order_acquire) ||
                cameraPoseActive_.load(std::memory_order_acquire) ||
                resetRequested_.load(std::memory_order_acquire) ||
@@ -82,7 +86,8 @@ namespace ssc
     bool SceneCamera::AllowsUpdateWhilePaused() const noexcept
     {
         const auto debugMode = debugVisualization_ && debugVisualization_->Enabled();
-        return resetRequested_.load(std::memory_order_acquire) ||
+        return targetUnlockPending_.load(std::memory_order_acquire) ||
+               resetRequested_.load(std::memory_order_acquire) ||
                (previewService_ && previewService_->PreviewSessionActive()) ||
                debugResumePending_.load(std::memory_order_acquire) ||
                debugMode != debugModeObserved_;
@@ -173,6 +178,12 @@ namespace ssc
         sceneEvaluationReadyAt_ = now_();
         sceneEvaluationPending_.store(true, std::memory_order_release);
         activeSince_ = sceneEvaluationReadyAt_;
+        // Event delivery may run on an SKSE job worker. Publish intent only;
+        // the camera update below performs all target-state access for startup.
+        targetUnlockQueued_.store(targetLockControl_ != nullptr, std::memory_order_release);
+        if (targetLockControl_) {
+            logger::info("TDM unlock queued for next camera update");
+        }
         logger::info("Initial scene evaluation pending for {:08X}/{}",
             a_event.key.sourceID, a_event.key.instanceID);
     }
@@ -228,6 +239,22 @@ namespace ssc
     {
         if (!ProcessPendingReset("pending reset"sv)) {
             return;
+        }
+        if (targetUnlockQueued_.exchange(false, std::memory_order_acq_rel) && session_.IsActive()) {
+            if (targetLockControl_->RequestUnlock()) {
+                targetUnlockDeadline_ = now_() + kTargetUnlockTimeout;
+                targetUnlockPending_.store(true, std::memory_order_release);
+                // TDM consumes the disable on its next update. Do not capture
+                // an initial camera anchor while it still faces the old target.
+                return;
+            }
+        }
+        if (targetUnlockPending_.load(std::memory_order_acquire)) {
+            const auto timedOut = now_() >= targetUnlockDeadline_;
+            if (!targetLockControl_->FinishUnlock(timedOut)) {
+                return;
+            }
+            targetUnlockPending_.store(false, std::memory_order_release);
         }
         const auto debugMode = debugVisualization_ && debugVisualization_->Enabled();
         const auto debugModeChanged = debugMode != debugModeObserved_;
@@ -1004,6 +1031,11 @@ namespace ssc
         const auto hadCameraOwnership = cameraControl_ && cameraControl_->OwnsCamera();
         StopSceneWork();
 
+        if (!CancelTargetUnlock()) {
+            resetRequested_.store(true, std::memory_order_release);
+            return;
+        }
+
         if (hadCameraOwnership && !ReleaseCamera(a_reason)) {
             return;
         }
@@ -1038,6 +1070,10 @@ namespace ssc
     void SceneCamera::EmergencyReset() noexcept
     {
         StopSceneWork();
+        if (!CancelTargetUnlock()) {
+            resetRequested_.store(true, std::memory_order_release);
+            return;
+        }
         if (cameraControl_ && !cameraControl_->EmergencyRelease()) {
             resetRequested_.store(true, std::memory_order_release);
             return;
@@ -1057,6 +1093,7 @@ namespace ssc
 
     void SceneCamera::StopSceneWork() noexcept
     {
+        targetUnlockQueued_.store(false, std::memory_order_release);
         session_.BeginRestore();
         sceneEvaluationPending_.store(false, std::memory_order_release);
         sceneEvaluationReadyAt_ = {};
@@ -1075,6 +1112,18 @@ namespace ssc
             debugVisualization_->HideVisibility();
         }
         PublishPreviewFeedback(false, "No active player scene");
+    }
+
+    bool SceneCamera::CancelTargetUnlock() noexcept
+    {
+        if (!targetUnlockPending_.load(std::memory_order_acquire)) {
+            return true;
+        }
+        if (!targetLockControl_->FinishUnlock(true)) {
+            return false;
+        }
+        targetUnlockPending_.store(false, std::memory_order_release);
+        return true;
     }
 
     void SceneCamera::Clear() noexcept

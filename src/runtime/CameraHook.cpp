@@ -1,5 +1,7 @@
 #include "runtime/CameraHook.h"
 
+#include <REX/W32/KERNEL32.h>
+
 namespace ssc::runtime
 {
     namespace
@@ -138,11 +140,11 @@ namespace ssc::runtime
                 }
 
                 logger::info(
-                    "Scene event task started: type={} key={:08X}/{} generation={}",
+                    "Scene event task started: type={} key={:08X}/{} generation={} currentThread={}",
                     SceneEventTypeName(a_event.type),
                     a_event.key.sourceID,
                     a_event.key.instanceID,
-                    generation);
+                    generation, REX::W32::GetCurrentThreadId());
                 auto* client = client_;
                 if (!client) {
                     logger::error(
@@ -435,7 +437,8 @@ namespace ssc::runtime
             if (firstThunkObserved_.compare_exchange_strong(
                     expected, true, std::memory_order_relaxed)) {
                 try {
-                    logger::info("Camera-state Update hook reached its first update");
+                    logger::info("Camera-state Update hook reached its first update (currentThread={})",
+                        REX::W32::GetCurrentThreadId());
                 } catch (...) {
                 }
             }

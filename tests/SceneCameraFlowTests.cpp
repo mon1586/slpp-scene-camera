@@ -6,6 +6,8 @@
 #include <cmath>
 #include <iostream>
 
+bool RunTDMTargetLockControlTests();
+
 namespace ssc::runtime
 {
     class SexLabPSceneSource
@@ -232,6 +234,29 @@ namespace
         std::uint32_t lastTargetActorID_{ 0 };
     };
 
+    class TestTargetLockControl final : public ssc::runtime::ITargetLockControl
+    {
+    public:
+        bool RequestUnlock() noexcept override { ++requests; return available && locked; }
+        bool FinishUnlock(bool a_cancel) noexcept override
+        {
+            ++finishAttempts;
+            if (!canFinish || (!a_cancel && locked)) {
+                return false;
+            }
+            ++releases;
+            lastCancelled = a_cancel;
+            return true;
+        }
+        bool available{ true };
+        bool locked{ true };
+        bool canFinish{ true };
+        bool lastCancelled{ false };
+        unsigned requests{ 0 };
+        unsigned finishAttempts{ 0 };
+        unsigned releases{ 0 };
+    };
+
     class TestDebugVisualization final : public ssc::runtime::IDebugVisualization
     {
     public:
@@ -306,7 +331,7 @@ int main()
     });
     camera.Update(1.0F / 60.0F);
 
-    bool passed = true;
+    bool passed = RunTDMTargetLockControlTests();
     auto feedback = previewService.Feedback();
     passed &= Check(feedback && feedback->visibilityEvaluation &&
         feedback->visibilityEvaluation->selectedPresetID ==
@@ -1076,6 +1101,104 @@ int main()
                 std::optional<std::string>{ "default" },
             "an old editor close cannot change selection or release the next scene");
         resetCamera.Reset("reset wakeup regression cleanup");
+    }
+
+    {
+        TestSceneSource source;
+        ssc::runtime::PresetPreviewService preview;
+        TestCameraControl output;
+        TestVisibilityProbe probe;
+        TestDebugVisualization debug;
+        TestTargetLockControl target;
+        auto now = ssc::SceneCamera::Clock::time_point{};
+        ssc::SceneCamera startup([&] { return now; });
+        startup.Configure(source, presetProvider, preview, output, probe, debug, &target);
+        using Event = ssc::runtime::SceneEventType;
+        const ssc::runtime::SceneKey otherKey{ 0x01000002, 2 };
+        const auto start = [&] { startup.HandleSceneEvent({ Event::kAnimationStart, sceneKey, participants }); };
+
+        startup.HandleSceneEvent({ Event::kAnimationStarting, sceneKey, participants });
+        startup.Update(0.016F);
+        passed &= Check(target.requests == 0, "Starting alone does not unlock");
+        start();
+        start();
+        startup.HandleSceneEvent({ Event::kAnimationStart, otherKey, participants });
+        passed &= Check(target.requests == 0 && target.finishAttempts == 0,
+            "start event only publishes intent; duplicates and another scene do not call API");
+        startup.Update(0.016F);
+        passed &= Check(target.requests == 1 && target.releases == 0 && source.anchorCollectionCount_ == 0,
+            "first camera update requests unlock before sampling initial anchor");
+        passed &= Check(startup.NeedsUpdate() && startup.AllowsUpdateWhilePaused(),
+            "pending unlock remains serviceable, including paused cleanup");
+        startup.Update(0.016F);
+        passed &= Check(target.requests == 1 && output.ApplyCount() == 0 && target.releases == 0,
+            "camera waits while TDM still reports a locked target");
+        target.locked = false;
+        startup.Update(0.016F);
+        passed &= Check(target.releases == 1 && !target.lastCancelled && source.anchorCollectionCount_ == 1,
+            "unlock confirmation releases disable and allows first anchor evaluation");
+        target.locked = true;  // a later manual lock must be left alone
+        startup.HandleSceneEvent({ Event::kAnimationChange, sceneKey, {} });
+        start();
+        startup.Update(0.016F);
+        passed &= Check(target.requests == 1 && target.releases == 1,
+            "change, duplicate start and manual relock do not request another unlock");
+        startup.Reset("next test");
+
+        start();
+        startup.HandleSceneEvent({ Event::kAnimationEnd, sceneKey, {} });
+        startup.Update(0.016F);
+        passed &= Check(target.requests == 1, "end before camera update discards queued unlock");
+        start();
+        startup.RequestReset();
+        startup.Update(0.016F);
+        passed &= Check(target.requests == 1, "load/reset before update discards queued unlock");
+        startup.HandleSceneEvent({ Event::kAnimationStart, sceneKey, {} });
+        startup.Update(0.016F);
+        passed &= Check(target.requests == 1, "non-player start does not unlock");
+
+        start();
+        startup.Update(0.016F);
+        target.canFinish = false;  // models a reset delivered on a worker
+        startup.Reset("worker reset");
+        passed &= Check(startup.NeedsUpdate() && startup.AllowsUpdateWhilePaused() && target.releases == 1,
+            "unavailable cancellation retains pending cleanup");
+        start();
+        passed &= Check(target.requests == 2, "restoration cannot start another unlock");
+        target.canFinish = true;
+        startup.Update(0.0F);
+        passed &= Check(target.releases == 2 && target.lastCancelled && !startup.NeedsUpdate(),
+            "next camera update completes cancellation while paused");
+
+        start();
+        startup.Update(0.016F);
+        now += std::chrono::milliseconds{ 1999 };
+        startup.Update(0.016F);
+        passed &= Check(target.releases == 2, "temporary disable remains before timeout");
+        now += std::chrono::milliseconds{ 1 };
+        startup.Update(0.0F);
+        passed &= Check(target.releases == 3 && target.lastCancelled,
+            "two-second timeout releases disable even when paused and still locked");
+        startup.Reset("timeout cleanup");
+
+        target.available = false;
+        const auto samplesBeforeUnavailable = source.anchorCollectionCount_;
+        start();
+        startup.Update(0.016F);
+        passed &= Check(source.anchorCollectionCount_ > samplesBeforeUnavailable && target.releases == 3,
+            "absent or rejected unlock does not block initial scene evaluation");
+        startup.Reset("unavailable cleanup");
+
+        target.available = true;
+        start();
+        startup.Update(0.016F);
+        target.canFinish = false;
+        startup.EmergencyReset();
+        passed &= Check(startup.NeedsUpdate(), "emergency reset retains failed cancellation");
+        target.canFinish = true;
+        startup.Update(0.0F);
+        passed &= Check(target.releases == 4 && !startup.NeedsUpdate(),
+            "emergency cancellation is retried at next camera update");
     }
 
     return passed ? 0 : 1;

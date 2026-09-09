@@ -1,5 +1,7 @@
 #pragma once
 
+#include "runtime/ITargetLockControl.h"
+
 #include "runtime/ICameraControl.h"
 #include "runtime/IDebugVisualization.h"
 #include "runtime/IPresetProvider.h"
@@ -32,7 +34,8 @@ namespace ssc
             runtime::PresetPreviewService& a_previewService,
             runtime::ICameraControl& a_cameraControl,
             runtime::IVisibilityProbe& a_visibilityProbe,
-            runtime::IDebugVisualization& a_debugVisualization) noexcept;
+            runtime::IDebugVisualization& a_debugVisualization,
+            runtime::ITargetLockControl* a_targetLockControl = nullptr) noexcept;
 
         [[nodiscard]] bool NeedsUpdate() const noexcept override;
         [[nodiscard]] bool AllowsUpdateWhilePaused() const noexcept override;
@@ -56,6 +59,7 @@ namespace ssc
             const runtime::SceneParticipantSnapshot& a_participants);
         void Restore(std::string_view a_reason);
         void StopSceneWork() noexcept;
+        [[nodiscard]] bool CancelTargetUnlock() noexcept;
         [[nodiscard]] std::optional<runtime::PresetTransform> ResolveTransform(
             const std::shared_ptr<const runtime::PresetPreviewRequest>& a_request) const;
         [[nodiscard]] bool ApplyTransform(
@@ -99,6 +103,10 @@ namespace ssc
         runtime::ICameraControl* cameraControl_{ nullptr };
         runtime::IVisibilityProbe* visibilityProbe_{ nullptr };
         runtime::IDebugVisualization* debugVisualization_{ nullptr };
+        runtime::ITargetLockControl* targetLockControl_{ nullptr };
+        std::atomic_bool targetUnlockQueued_{ false };
+        std::atomic_bool targetUnlockPending_{ false };
+        Clock::time_point targetUnlockDeadline_{};
         SceneSession session_;
         runtime::SceneParticipantSnapshot participants_;
         std::chrono::steady_clock::time_point activeSince_{};

@@ -7,6 +7,7 @@
 #include "runtime/PluginRuntime.h"
 #include "runtime/SexLabPSceneSource.h"
 #include "runtime/SmoothCamCameraControl.h"
+#include "runtime/TDMTargetLockControl.h"
 #include "runtime/WorldDebugVisualization.h"
 
 #include <REX/W32/KERNEL32.h>
@@ -47,7 +48,8 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
             *ssc::runtime::PresetPreviewService::GetSingleton(),
             *ssc::runtime::SmoothCamCameraControl::GetSingleton(),
             *ssc::runtime::HavokVisibilityProbe::GetSingleton(),
-            *ssc::runtime::WorldDebugVisualization::GetSingleton());
+            *ssc::runtime::WorldDebugVisualization::GetSingleton(),
+            ssc::runtime::TDMTargetLockControl::GetSingleton());
         ssc::runtime::CameraHook::Configure(
             *sceneCamera,
             *ssc::runtime::SexLabPSceneSource::GetSingleton());

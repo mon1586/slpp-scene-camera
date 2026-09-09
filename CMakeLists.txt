@@ -63,6 +63,9 @@ set(SSC_SOURCES
     src/runtime/PresetPreviewService.cpp
     src/runtime/PresetPreviewService.h
     src/runtime/ICameraControl.h
+    src/runtime/ITargetLockControl.h
+    src/runtime/TDMTargetLockControl.cpp
+    src/runtime/TDMTargetLockControl.h
     src/runtime/IDebugVisualization.h
     src/runtime/IVisibilityProbe.h
     src/runtime/IPresetProvider.h
@@ -110,6 +113,7 @@ target_include_directories(
     SexlabSceneCamera
     SYSTEM PRIVATE
         external/skse-menu-framework
+        external/tdm
 )
 
 target_link_libraries(
@@ -245,6 +249,8 @@ if(SSC_BUILD_TESTS)
     add_executable(
         SexlabSceneCameraFlowTests
         tests/SceneCameraFlowTests.cpp
+        tests/TDMTargetLockControlTests.cpp
+        src/runtime/TDMTargetLockControl.cpp
         src/SceneCamera.cpp
         src/SceneCamera.h
         src/SceneSession.h
@@ -271,6 +277,7 @@ if(SSC_BUILD_TESTS)
         src/runtime/SceneKey.h
     )
     target_include_directories(SexlabSceneCameraFlowTests PRIVATE src)
+    target_include_directories(SexlabSceneCameraFlowTests SYSTEM PRIVATE external/tdm)
     target_link_libraries(
         SexlabSceneCameraFlowTests
         PRIVATE

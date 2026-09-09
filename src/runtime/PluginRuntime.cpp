@@ -6,6 +6,7 @@
 #include "runtime/PresetRepository.h"
 #include "runtime/SexLabPSceneSource.h"
 #include "runtime/SmoothCamCameraControl.h"
+#include "runtime/TDMTargetLockControl.h"
 #include "runtime/WorldDebugVisualization.h"
 #include "ui/PresetEditorMenu.h"
 
@@ -71,6 +72,7 @@ namespace ssc::runtime
                 static_cast<void>(WorldDebugVisualization::Register());
                 break;
             case SKSE::MessagingInterface::kPostPostLoad:
+                TDMTargetLockControl::GetSingleton()->RequestAPI();
                 static_cast<void>(
                     SmoothCamCameraControl::GetSingleton()->RequestAPI(messaging));
                 break;
