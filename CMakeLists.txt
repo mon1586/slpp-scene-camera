@@ -49,6 +49,8 @@ set(SSC_SOURCES
     src/core/VisibilityEvaluation.h
     src/runtime/CameraHook.cpp
     src/runtime/CameraHook.h
+    src/runtime/MainUpdateDispatcher.cpp
+    src/runtime/MainUpdateDispatcher.h
     src/runtime/CameraFOV.h
     src/runtime/CameraInput.cpp
     src/runtime/CameraInput.h
@@ -250,6 +252,7 @@ if(SSC_BUILD_TESTS)
         SexlabSceneCameraFlowTests
         tests/SceneCameraFlowTests.cpp
         tests/TDMTargetLockControlTests.cpp
+        src/runtime/MainUpdateDispatcher.cpp
         src/runtime/TDMTargetLockControl.cpp
         src/SceneCamera.cpp
         src/SceneCamera.h

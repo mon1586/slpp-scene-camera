@@ -178,8 +178,8 @@ namespace ssc
         sceneEvaluationReadyAt_ = now_();
         sceneEvaluationPending_.store(true, std::memory_order_release);
         activeSince_ = sceneEvaluationReadyAt_;
-        // Event delivery may run on an SKSE job worker. Publish intent only;
-        // the camera update below performs all target-state access for startup.
+        // Event delivery runs at main update, but initial target unlock remains
+        // paired with camera startup on the following camera-state update.
         targetUnlockQueued_.store(targetLockControl_ != nullptr, std::memory_order_release);
         if (targetLockControl_) {
             logger::info("TDM unlock queued for next camera update");

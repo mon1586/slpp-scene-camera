@@ -2,6 +2,7 @@
 
 #include "runtime/IRuntimeClient.h"
 #include "runtime/ISceneSource.h"
+#include "runtime/MainUpdateDispatcher.h"
 
 namespace ssc::runtime
 {
@@ -10,6 +11,7 @@ namespace ssc::runtime
     public:
         static void Configure(IRuntimeClient& a_client, ISceneSource& a_sceneSource) noexcept;
         [[nodiscard]] static bool RegisterCameraStateSink() noexcept;
+        [[nodiscard]] static bool InstallMainUpdateHook();
         static void SubmitEvent(SceneEvent a_event);
         static void QueueReset(std::string_view a_reason) noexcept;
         static void InvalidatePendingEvents() noexcept;
@@ -43,6 +45,7 @@ namespace ssc::runtime
             std::index_sequence<Indices...>) noexcept;
 
         [[nodiscard]] static bool InstallOnce(const SceneKey& a_key);
+        static void MainUpdateThunk();
         [[nodiscard]] static std::uintptr_t GetThunkAddress(std::size_t a_index) noexcept;
         static void HandleBoundaryFailure(std::string_view a_context) noexcept;
         static void HandleUpdateFailure(std::string_view a_context) noexcept;
@@ -54,7 +57,10 @@ namespace ssc::runtime
         static inline std::atomic<InstallState> installState_{ InstallState::kNotInstalled };
         static inline std::atomic_bool firstThunkObserved_{ false };
         static inline std::atomic_bool hookLossReported_{ false };
-        static inline std::atomic_bool resetTaskQueued_{ false };
+        static inline MainUpdateDispatcher mainUpdates_;
+        static inline std::atomic<decltype(&MainUpdateThunk)> mainUpdateOriginal_{ nullptr };
+        static inline std::atomic_bool mainUpdateInstalled_{ false };
+        static inline std::atomic_ulong mainUpdateThread_{ 0 };
         static inline std::atomic<std::uint64_t> eventGeneration_{ 1 };
         static inline IRuntimeClient* client_{ nullptr };
         static inline ISceneSource* sceneSource_{ nullptr };

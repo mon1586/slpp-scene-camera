@@ -72,6 +72,54 @@ namespace ssc::runtime
         eventGeneration_.fetch_add(1, std::memory_order_acq_rel);
     }
 
+    bool CameraHook::InstallMainUpdateHook()
+    {
+        if (mainUpdateInstalled_.load(std::memory_order_acquire)) {
+            return true;
+        }
+        // Same engine nullsub call used by TDM's MainUpdateHook (void()).
+        // Capture the current call target so existing mod hooks remain chained.
+        const REL::Relocation<std::uintptr_t> mainUpdate{ REL::RelocationID(35565, 36564) };
+        // Current TDM source moves the AE call at runtime 1.7.99.
+        const auto aeOffset = REL::Module::get().version() >= REL::Version(1, 7, 99, 0) ? 0xC38 : 0xC26;
+        const auto call = mainUpdate.address() + REL::VariantOffset(0x748, aeOffset, 0).offset();
+        if (*reinterpret_cast<const std::uint8_t*>(call) != 0xE8) {
+            logger::error("Main update hook unavailable: expected a five-byte CALL; scene source disabled");
+            return false;
+        }
+        SKSE::AllocTrampoline(14);
+        std::int32_t displacement;
+        std::memcpy(&displacement, reinterpret_cast<const void*>(call + 1), sizeof(displacement));
+        mainUpdateOriginal_.store(
+            SKSE::stl::unrestricted_cast<decltype(&MainUpdateThunk)>(call + 5 + displacement),
+            std::memory_order_release);
+        static_cast<void>(SKSE::GetTrampoline().write_call<5>(call, MainUpdateThunk));
+        mainUpdateInstalled_.store(true, std::memory_order_release);
+        logger::info("Main update dispatcher installed (currentThread={})", REX::W32::GetCurrentThreadId());
+        return true;
+    }
+
+    void CameraHook::MainUpdateThunk()
+    {
+        // Exceptions in the preexisting chain are not SSC failures.
+        mainUpdateOriginal_.load(std::memory_order_acquire)();
+        try {
+            const auto current = REX::W32::GetCurrentThreadId();
+            unsigned long expected = 0;
+            if (mainUpdateThread_.compare_exchange_strong(expected, current, std::memory_order_acq_rel)) {
+                logger::info("Main update dispatcher reached its first update (currentThread={})", current);
+            } else if (expected != current) {
+                HandleBoundaryFailure("main update changed execution thread"sv);
+                return;
+            }
+            if (auto* client = client_) {
+                mainUpdates_.Tick(*client);
+            }
+        } catch (...) {
+            HandleBoundaryFailure("main update dispatcher"sv);
+        }
+    }
+
     void CameraHook::QueueReset(std::string_view a_reason) noexcept
     {
         auto* client = client_;
@@ -79,40 +127,16 @@ namespace ssc::runtime
             return;
         }
         client->RequestReset();
-
-        bool expected = false;
-        if (!resetTaskQueued_.compare_exchange_strong(
-                expected, true, std::memory_order_acq_rel)) {
-            return;
-        }
-
-        auto* tasks = SKSE::GetTaskInterface();
-        if (!tasks) {
-            resetTaskQueued_.store(false, std::memory_order_release);
-            client->RequestReset();
-            return;
-        }
-
-        try {
-            tasks->AddTask([reason = std::string{ a_reason }] {
-                resetTaskQueued_.store(false, std::memory_order_release);
-                if (auto* runtimeClient = client_) {
-                    static_cast<void>(runtimeClient->ProcessPendingReset(reason));
-                }
-            });
-        } catch (...) {
-            resetTaskQueued_.store(false, std::memory_order_release);
-            client->RequestReset();
-            HandleBoundaryFailure("camera reset scheduling"sv);
-        }
+        // The main-update dispatcher observes this flag without relying on an
+        // SKSE task consumer or another supported camera-state update.
+        static_cast<void>(a_reason);
     }
 
     void CameraHook::SubmitEvent(SceneEvent a_event)
     {
-        auto* tasks = SKSE::GetTaskInterface();
-        if (!tasks) {
+        if (!mainUpdateInstalled_.load(std::memory_order_acquire)) {
             logger::error(
-                "Ignoring scene event {} {:08X}/{}: SKSE task interface is unavailable",
+                "Ignoring scene event {} {:08X}/{}: main update dispatcher is unavailable",
                 SceneEventTypeName(a_event.type),
                 a_event.key.sourceID,
                 a_event.key.instanceID);
@@ -126,7 +150,7 @@ namespace ssc::runtime
             a_event.key.sourceID,
             a_event.key.instanceID,
             generation);
-        tasks->AddTask([a_event, generation] {
+        mainUpdates_.Post([a_event, generation] {
             try {
                 if (generation != eventGeneration_.load(std::memory_order_acquire)) {
                     logger::info(
@@ -140,7 +164,7 @@ namespace ssc::runtime
                 }
 
                 logger::info(
-                    "Scene event task started: type={} key={:08X}/{} generation={} currentThread={}",
+                    "Scene event main update: type={} key={:08X}/{} generation={} currentThread={}",
                     SceneEventTypeName(a_event.type),
                     a_event.key.sourceID,
                     a_event.key.instanceID,
@@ -220,14 +244,14 @@ namespace ssc::runtime
                 client->HandleSceneEvent(preparedEvent);
             } catch (const std::exception& exception) {
                 try {
-                    logger::critical("Scene event task failed: {}", exception.what());
+                    logger::critical("Scene event main update failed: {}", exception.what());
                 } catch (...) {
                 }
                 if (auto* client = client_) {
                     client->EmergencyReset();
                 }
             } catch (...) {
-                HandleBoundaryFailure("scene event task"sv);
+                HandleBoundaryFailure("scene event main update"sv);
             }
         });
     }

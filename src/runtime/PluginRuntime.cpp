@@ -111,6 +111,10 @@ namespace ssc::runtime
                         presetPath.string(),
                         loadResult.error);
                 }
+                if (!CameraHook::InstallMainUpdateHook()) {
+                    logger::error("Scene camera disabled: main update dispatcher is unavailable");
+                    break;
+                }
                 if (!CameraHook::RegisterCameraStateSink()) {
                     logger::warn("Camera-state observer is unavailable");
                 }

@@ -2,9 +2,11 @@
 
 #include "runtime/IDebugVisualization.h"
 #include "runtime/IVisibilityProbe.h"
+#include "runtime/MainUpdateDispatcher.h"
 
 #include <cmath>
 #include <iostream>
+#include <thread>
 
 bool RunTDMTargetLockControlTests();
 
@@ -1199,6 +1201,77 @@ int main()
         startup.Update(0.0F);
         passed &= Check(target.releases == 4 && !startup.NeedsUpdate(),
             "emergency cancellation is retried at next camera update");
+    }
+
+    // R1/R2: real worker producers, main consumer, no camera updates during cleanup.
+    {
+        TestSceneSource source;
+        TestPresetProvider presets({ { "default", defaultTransform } });
+        ssc::runtime::PresetPreviewService preview;
+        TestCameraControl output;
+        TestVisibilityProbe probe;
+        TestDebugVisualization debug;
+        ssc::SceneCamera scene;
+        scene.Configure(source, presets, preview, output, probe, debug);
+        ssc::runtime::MainUpdateDispatcher dispatcher;
+        const auto mainThread = std::this_thread::get_id();
+        std::thread::id collectionThread;
+        std::vector<int> order;
+        std::thread producer([&] {
+            dispatcher.Post([&] {
+                collectionThread = std::this_thread::get_id();
+                const auto collected = source.CollectParticipants(sceneKey);
+                scene.HandleSceneEvent({ ssc::runtime::SceneEventType::kAnimationStart, sceneKey, collected });
+                order.push_back(1);
+                dispatcher.Post([&] { order.push_back(3); });
+            });
+            dispatcher.Post([&] { order.push_back(2); });
+        });
+        producer.join();
+        passed &= Check(collectionThread == std::thread::id{} && order.empty() && !scene.NeedsUpdate(),
+            "R2 worker only publishes notifications, without collection or scene mutation");
+        dispatcher.Tick(scene);
+        passed &= Check(collectionThread == mainThread && order == std::vector<int>{ 1, 2 } && scene.NeedsUpdate(),
+            "R2 collection and scene delivery run in order on main consumer; reentrant posts wait");
+        dispatcher.Tick(scene);
+        passed &= Check(order == std::vector<int>{ 1, 2, 3 }, "new notifications run on following main update");
+
+        scene.Update(0.016F); // acquire once; no camera-state Update after this line
+        passed &= Check(output.OwnsCamera(), "R1 camera ownership acquired before losing camera updates");
+        const auto applies = output.ApplyCount();
+        const auto anchors = source.anchorCollectionCount_;
+        output.releaseFailureResult_ = ssc::runtime::CameraReleaseResult::kWrongThread;
+        output.releaseFailures_ = 1;
+        std::thread resetProducer([&] { scene.RequestReset(); });
+        resetProducer.join();
+        dispatcher.Tick(scene);
+        passed &= Check(output.OwnsCamera() && scene.NeedsUpdate(), "R1 failed release remains pending");
+        dispatcher.Tick(scene);
+        passed &= Check(!output.OwnsCamera() && !scene.NeedsUpdate() &&
+            output.ApplyCount() == applies && source.anchorCollectionCount_ == anchors,
+            "R1 main update alone retries and releases without camera update, pose or anchor work");
+        const auto releases = output.releaseCount_;
+        dispatcher.Tick(scene);
+        passed &= Check(output.releaseCount_ == releases, "idle main update does not release twice");
+
+        TestTargetLockControl target;
+        scene.Configure(source, presets, preview, output, probe, debug, &target);
+        scene.HandleSceneEvent({ ssc::runtime::SceneEventType::kAnimationStart, sceneKey, participants });
+        scene.Update(0.016F); // acquire disable, then stop camera-state updates
+        target.canFinish = false;
+        std::thread endProducer([&] {
+            dispatcher.Post([&] {
+                scene.HandleSceneEvent({ ssc::runtime::SceneEventType::kAnimationEnd, sceneKey, {} });
+            });
+        });
+        endProducer.join();
+        dispatcher.Tick(scene);
+        passed &= Check(target.requests == 1 && target.releases == 0 && scene.NeedsUpdate(),
+            "R1 end on main consumer retains failed target-disable return");
+        target.canFinish = true;
+        dispatcher.Tick(scene);
+        passed &= Check(target.releases == 1 && target.lastCancelled && !scene.NeedsUpdate(),
+            "R1 main update returns TDM disable with no subsequent camera update");
     }
 
     return passed ? 0 : 1;

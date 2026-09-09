@@ -356,7 +356,7 @@ namespace ssc::runtime
 
             if (handler_) {
                 logger::info(
-                    "Scene callback accepted: type={} key={:08X}/{}; forwarding to game task",
+                    "Scene callback accepted: type={} key={:08X}/{}; queued for main update",
                     SceneEventTypeName(*eventKind),
                     sourceID,
                     *instanceID);
