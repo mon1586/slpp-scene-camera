@@ -8,6 +8,8 @@ Runtimeは手続きの順序、待機時間、計算結果の採否を決めな�
 
 ## SexLab P+入力
 
+Move Scene時の一時返却と復帰は[Move Scene設計](move-scene-design.md)に従う。Runtimeはプレイヤーの移動入力許可とポーズ状態を提供し、取得不能と入力禁止を区別する。これらの観測と返却の再試行は対応カメラ更新の有無に依存しない。
+
 SexLab P+が送るSKSE `ModCallbackEvent`を購読し、次の未接頭辞イベントをRuntimeの`SceneEvent`へ変換する。
 
 | 外部イベント | Runtime通知 | 用途 |
@@ -15,10 +17,11 @@ SexLab P+が送るSKSE `ModCallbackEvent`を購読し、次の未接頭辞イベ
 | `AnimationStarting` | `kAnimationStarting` | シーン開始準備 |
 | `AnimationStart` | `kAnimationStart` | 初回アニメーションの同期完了 |
 | `AnimationChange` | `kAnimationChange` | P+ hotkeyによる実行中アニメーションの変更開始 |
+| `ActorsRelocated` | `kActorsRelocated` | 再配置成功。一時中断の復帰待機または構図再評価の契機 |
 | `AnimationEnding` | `kAnimationEnding` | シーン終了開始 |
 | `AnimationEnd` | `kAnimationEnd` | シーン終了完了 |
 
-`HookAnimationStart`、`HookAnimationChange`、`HookAnimationEnd`も互換入力として同じRuntime通知へ変換する。
+`HookAnimationStart`、`HookAnimationChange`、`HookAnimationEnd`、`HookActorsRelocated`も互換入力として同じRuntime通知へ変換する。
 
 `AnimationChange`は変更後の姿勢が利用可能になったことを保証しない。Runtimeは受信直後に通知し、待機や再計算は行わない。
 

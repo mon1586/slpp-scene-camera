@@ -12,6 +12,7 @@ namespace ssc::runtime
         [[nodiscard]] virtual bool NeedsUpdate() const noexcept = 0;
         [[nodiscard]] virtual bool AllowsUpdateWhilePaused() const noexcept = 0;
         virtual void HandleSceneEvent(const SceneEvent& a_event) = 0;
+        virtual void ProcessMainUpdate() = 0;
         virtual void Update(float a_deltaSeconds) = 0;
         virtual void Reset(std::string_view a_reason) = 0;
         virtual void RequestReset() noexcept = 0;

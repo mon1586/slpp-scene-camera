@@ -13,6 +13,8 @@ namespace ssc::runtime
         virtual ~ISceneSource() = default;
 
         [[nodiscard]] virtual bool Register(SceneEventHandler a_handler) = 0;
+        // Main-update observation; unavailable is not equivalent to locked.
+        [[nodiscard]] virtual std::optional<SceneControlState> CollectControlState() const = 0;
         [[nodiscard]] virtual SceneParticipantSnapshot CollectParticipants(
             const SceneKey& a_key) const = 0;
         [[nodiscard]] virtual std::optional<SceneAnchorSamples> CollectAnchorInput(

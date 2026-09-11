@@ -38,6 +38,12 @@ namespace
     class TestSceneSource final : public ssc::runtime::ISceneSource
     {
     public:
+        [[nodiscard]] std::optional<ssc::runtime::SceneControlState> CollectControlState() const override
+        {
+            return controlState_;
+        }
+        std::optional<ssc::runtime::SceneControlState> controlState_{ ssc::runtime::SceneControlState{} };
+
         [[nodiscard]] bool Register(ssc::runtime::SceneEventHandler) override
         {
             return true;
@@ -157,6 +163,10 @@ namespace
         [[nodiscard]] ssc::runtime::CameraReleaseResult Release() override
         {
             ++releaseCount_;
+            if (loseOwnershipOnRelease_) {
+                owns_ = false;
+                return ssc::runtime::CameraReleaseResult::kNoOwnership;
+            }
             if (releaseFailures_ > 0) {
                 --releaseFailures_;
                 return releaseFailureResult_;
@@ -185,6 +195,7 @@ namespace
         [[nodiscard]] std::size_t ApplyCount() const noexcept { return applyCount_; }
 
         bool failNextRelease_{ false };
+        bool loseOwnershipOnRelease_{ false };
         bool failEmergencyRelease_{ false };
         unsigned releaseFailures_{ 0 };
         unsigned releaseCount_{ 0 };
@@ -1272,6 +1283,268 @@ int main()
         dispatcher.Tick(scene);
         passed &= Check(target.releases == 1 && target.lastCancelled && !scene.NeedsUpdate(),
             "R1 main update returns TDM disable with no subsequent camera update");
+    }
+
+    // Move Scene: short hotkey and long timeout paths share the same control
+    // transitions. Camera updates alone cannot release or resume the suspension.
+    for (const auto duration : { std::chrono::seconds{ 4 }, std::chrono::seconds{ 39 } }) {
+        TestSceneSource source;
+        TestPresetProvider presets({ { "default", defaultTransform }, { "other", alternateTransform } });
+        ssc::runtime::PresetPreviewService preview;
+        TestCameraControl output;
+        TestVisibilityProbe probe;
+        TestDebugVisualization debug;
+        auto now = ssc::SceneCamera::Clock::time_point{};
+        ssc::SceneCamera scene([&] { return now; });
+        scene.Configure(source, presets, preview, output, probe, debug);
+        ssc::runtime::MainUpdateDispatcher dispatcher;
+        scene.HandleSceneEvent({ ssc::runtime::SceneEventType::kAnimationStart, sceneKey, participants });
+        dispatcher.Tick(scene);
+        scene.Update(0.016F);
+        const auto oldPose = *output.LastPose();
+        const auto oldApplies = output.ApplyCount();
+        const auto oldAnchors = source.anchorCollectionCount_;
+        source.controlState_->movementEnabled = true;
+        dispatcher.Tick(scene); // no camera update is needed to return control
+        passed &= Check(!output.OwnsCamera() && output.releaseCount_ == 1 && scene.NeedsUpdate(),
+            "movement unlock returns the camera on main update and keeps the scene");
+        scene.RequestPresetStep(1);
+        // Move along the probe's open corridor (the fake blocks |x| >= 80).
+        source.bodyCenter_ = { 20.0F, 1000.0F, 30.0F };
+        now += duration;
+        scene.Update(0.016F);
+        dispatcher.Tick(scene);
+        passed &= Check(output.ApplyCount() == oldApplies && source.anchorCollectionCount_ == oldAnchors &&
+            output.acquireCount_ == 1 && output.releaseCount_ == 1,
+            "movement keeps camera, A/D and anchor work suspended without duplicate external release");
+
+        source.controlState_->movementEnabled = false;
+        dispatcher.Tick(scene);
+        now += std::chrono::milliseconds{ 700 };
+        scene.HandleSceneEvent({ ssc::runtime::SceneEventType::kActorsRelocated, sceneKey, {} });
+        dispatcher.Tick(scene);
+        now += std::chrono::milliseconds{ 999 };
+        dispatcher.Tick(scene);
+        scene.Update(0.016F);
+        passed &= Check(!output.OwnsCamera(), "relocation notification restarts settling before reacquisition");
+        now += std::chrono::milliseconds{ 1 };
+        dispatcher.Tick(scene);
+        passed &= Check(!output.OwnsCamera(), "main update queues resume without applying a camera pose");
+        scene.Update(0.016F);
+        passed &= Check(output.OwnsCamera() && output.acquireCount_ == 2 &&
+            std::abs(output.LastPose()->position.x - oldPose.position.x - 20.0F) < 0.01F &&
+            std::abs(output.LastPose()->position.y - oldPose.position.y - 1000.0F) < 0.01F,
+            "hotkey and timeout resume with a fresh destination anchor, without smoothing across the move");
+
+        // A second move without ActorsRelocated models cancellation's missing event.
+        source.controlState_->movementEnabled = true;
+        dispatcher.Tick(scene);
+        source.controlState_->movementEnabled = false;
+        dispatcher.Tick(scene);
+        now += std::chrono::seconds{ 1 };
+        dispatcher.Tick(scene);
+        scene.Update(0.016F);
+        passed &= Check(output.OwnsCamera() && output.acquireCount_ == 3,
+            "a repeated move resumes after relock even without a relocation callback");
+    }
+
+    // Return failures, unknown input and paused confirmation dialogs cannot
+    // turn into a successful resume merely because time passes.
+    {
+        TestSceneSource source;
+        TestPresetProvider presets({ { "default", defaultTransform } });
+        ssc::runtime::PresetPreviewService preview;
+        TestCameraControl output;
+        TestVisibilityProbe probe;
+        TestDebugVisualization debug;
+        auto now = ssc::SceneCamera::Clock::time_point{};
+        ssc::SceneCamera scene([&] { return now; });
+        scene.Configure(source, presets, preview, output, probe, debug);
+        ssc::runtime::MainUpdateDispatcher dispatcher;
+        scene.HandleSceneEvent({ ssc::runtime::SceneEventType::kAnimationStart, sceneKey, participants });
+        scene.Update(0.016F);
+        preview.BeginPreviewSession();
+        static_cast<void>(preview.SetPreview(alternateTransform, "default"));
+        source.controlState_->movementEnabled = true;
+        output.releaseFailureResult_ = ssc::runtime::CameraReleaseResult::kWrongThread;
+        output.releaseFailures_ = 2;
+        dispatcher.Tick(scene);
+        scene.Update(0.016F);
+        passed &= Check(output.OwnsCamera() && !preview.PreviewSessionActive() && !preview.Request() &&
+            !preview.Feedback()->previewApplied && !preview.Feedback()->previewPossible,
+            "failed movement return locks preview immediately and preserves the release obligation");
+        source.controlState_->movementEnabled = false;
+        now += std::chrono::seconds{ 3 };
+        dispatcher.Tick(scene);
+        passed &= Check(output.OwnsCamera() && output.acquireCount_ == 1,
+            "relocked input does not reacquire while a camera return is pending");
+        dispatcher.Tick(scene);
+        passed &= Check(!output.OwnsCamera() && output.releaseCount_ == 3,
+            "main updates retry the failed return even without camera updates");
+        source.controlState_.reset();
+        now += std::chrono::seconds{ 3 };
+        dispatcher.Tick(scene);
+        scene.Update(0.016F);
+        passed &= Check(!output.OwnsCamera(), "unavailable input is not interpreted as relock");
+        source.controlState_ = ssc::runtime::SceneControlState{ false, true };
+        now += std::chrono::seconds{ 3 };
+        dispatcher.Tick(scene);
+        scene.Update(0.016F);
+        passed &= Check(!output.OwnsCamera(), "paused dialog cannot complete movement resume");
+        source.controlState_->paused = false;
+        dispatcher.Tick(scene);
+        now += std::chrono::milliseconds{ 999 };
+        dispatcher.Tick(scene);
+        scene.Update(0.016F);
+        passed &= Check(!output.OwnsCamera(), "unpause starts a new full settling interval");
+        now += std::chrono::milliseconds{ 1 };
+        dispatcher.Tick(scene);
+        // Missing bodies must not reuse the cached pre-move anchor.
+        source.anchorAvailable_ = false;
+        scene.Update(0.016F);
+        passed &= Check(!output.OwnsCamera(), "resume waits for a fresh valid body sample");
+        source.anchorAvailable_ = true;
+        output.acquireFailures_ = 1;
+        scene.Update(0.016F);
+        const auto acquisitions = output.acquireCount_;
+        for (int i = 0; i < 5; ++i) {
+            dispatcher.Tick(scene);
+            scene.Update(0.016F);
+        }
+        passed &= Check(!output.OwnsCamera() && output.acquireCount_ == acquisitions,
+            "resume acquisition refusal follows the existing policy without a per-frame retry loop");
+    }
+
+    for (const bool debugMode : { false, true }) {
+        for (const bool endEvent : { false, true }) {
+            TestSceneSource source;
+            TestPresetProvider presets({ { "default", defaultTransform } });
+            ssc::runtime::PresetPreviewService preview;
+            TestCameraControl output;
+            TestVisibilityProbe probe;
+            TestDebugVisualization debug;
+            debug.enabled_ = debugMode;
+            auto now = ssc::SceneCamera::Clock::time_point{};
+            ssc::SceneCamera scene([&] { return now; });
+            scene.Configure(source, presets, preview, output, probe, debug);
+            ssc::runtime::MainUpdateDispatcher dispatcher;
+            scene.HandleSceneEvent({ ssc::runtime::SceneEventType::kAnimationStart, sceneKey, participants });
+            scene.Update(0.016F);
+            source.controlState_->movementEnabled = true;
+            dispatcher.Tick(scene);
+            source.controlState_->movementEnabled = false;
+            dispatcher.Tick(scene);
+            now += std::chrono::seconds{ 1 };
+            dispatcher.Tick(scene);
+            scene.Update(0.016F);
+            passed &= Check(output.OwnsCamera() == !debugMode,
+                "movement resume respects Debug mode");
+            source.controlState_->movementEnabled = true;
+            dispatcher.Tick(scene);
+            if (endEvent) {
+                scene.HandleSceneEvent({ ssc::runtime::SceneEventType::kAnimationEnd, sceneKey, {} });
+            } else {
+                scene.RequestReset(); // shared lifecycle reset path
+            }
+            dispatcher.Tick(scene);
+            source.controlState_->movementEnabled = false;
+            scene.HandleSceneEvent({ ssc::runtime::SceneEventType::kActorsRelocated, sceneKey, {} });
+            now += std::chrono::seconds{ 5 };
+            dispatcher.Tick(scene);
+            scene.Update(0.016F);
+            passed &= Check(!output.OwnsCamera() && !scene.NeedsUpdate(),
+                "end/reset cancels movement resume; a late relocation cannot resurrect the scene");
+        }
+    }
+
+    {
+        TestSceneSource source;
+        TestPresetProvider presets({ { "default", defaultTransform } });
+        ssc::runtime::PresetPreviewService preview;
+        TestCameraControl output;
+        TestVisibilityProbe probe;
+        TestDebugVisualization debug;
+        TestTargetLockControl target;
+        auto now = ssc::SceneCamera::Clock::time_point{};
+        ssc::SceneCamera scene([&] { return now; });
+        scene.Configure(source, presets, preview, output, probe, debug, &target);
+        ssc::runtime::MainUpdateDispatcher dispatcher;
+        scene.HandleSceneEvent({ ssc::runtime::SceneEventType::kAnimationStart, sceneKey, participants });
+        scene.Update(0.016F); // TDM temporary disable is pending, camera not acquired yet.
+        target.canFinish = false;
+        source.controlState_->movementEnabled = true;
+        dispatcher.Tick(scene);
+        source.controlState_->movementEnabled = false;
+        now += std::chrono::seconds{ 3 };
+        dispatcher.Tick(scene);
+        scene.Update(0.016F);
+        passed &= Check(!output.OwnsCamera() && target.releases == 0,
+            "movement suspension cannot resume while the startup target disable is still owned");
+        target.canFinish = true;
+        dispatcher.Tick(scene);
+        passed &= Check(target.releases == 1 && target.lastCancelled,
+            "main update cancels and returns the startup target disable during movement suspension");
+        now += std::chrono::milliseconds{ 900 };
+        const ssc::runtime::SceneKey otherKey{ sceneKey.sourceID, sceneKey.instanceID + 1 };
+        scene.HandleSceneEvent({ ssc::runtime::SceneEventType::kActorsRelocated, otherKey, {} });
+        now += std::chrono::milliseconds{ 100 };
+        dispatcher.Tick(scene);
+        scene.Update(0.016F);
+        passed &= Check(output.OwnsCamera() && target.requests == 1,
+            "unrelated relocation does not extend settling or repeat initial TDM unlock");
+        source.controlState_->movementEnabled = true;
+        dispatcher.Tick(scene);
+        now += std::chrono::minutes{ 31 };
+        dispatcher.Tick(scene);
+        passed &= Check(!output.OwnsCamera() && !scene.NeedsUpdate(),
+            "main update expires the original watchdog during suspension without camera updates");
+    }
+
+    // COR-1: loss of recorded ownership at movement entry is a terminal
+    // boundary, unlike another mod using the camera after a successful return.
+    for (const bool lossBeforeReturn : { true, false }) {
+        TestSceneSource source;
+        TestPresetProvider presets({ { "default", defaultTransform } });
+        ssc::runtime::PresetPreviewService preview;
+        TestCameraControl output;
+        TestVisibilityProbe probe;
+        TestDebugVisualization debug;
+        auto now = ssc::SceneCamera::Clock::time_point{};
+        ssc::SceneCamera scene([&] { return now; });
+        scene.Configure(source, presets, preview, output, probe, debug);
+        ssc::runtime::MainUpdateDispatcher dispatcher;
+        scene.HandleSceneEvent({ ssc::runtime::SceneEventType::kAnimationStart, sceneKey, participants });
+        dispatcher.Tick(scene);
+        scene.Update(0.016F);
+        output.loseOwnershipOnRelease_ = lossBeforeReturn;
+        source.controlState_->movementEnabled = true;
+        dispatcher.Tick(scene);
+        const auto releases = output.releaseCount_;
+        // In the normal handoff case, there is now no recorded SSC ownership:
+        // a later owner's presence must not be mistaken for ownership loss.
+        output.loseOwnershipOnRelease_ = true;
+        dispatcher.Tick(scene);
+        passed &= Check(!output.OwnsCamera() && output.releaseCount_ == releases,
+            "COR-1 no release of another owner's camera after either handoff outcome");
+        source.controlState_->movementEnabled = false;
+        scene.HandleSceneEvent({ ssc::runtime::SceneEventType::kActorsRelocated, sceneKey, {} });
+        dispatcher.Tick(scene);
+        now += std::chrono::seconds{ 2 };
+        dispatcher.Tick(scene);
+        scene.Update(0.016F);
+        if (lossBeforeReturn) {
+            passed &= Check(!output.OwnsCamera() && output.acquireCount_ == 1 &&
+                !scene.NeedsUpdate() && !preview.Feedback()->sceneActive,
+                "COR-1 lost ownership discards the scene; relock and late relocation cannot reacquire");
+            scene.HandleSceneEvent({ ssc::runtime::SceneEventType::kAnimationStart, sceneKey, participants });
+            dispatcher.Tick(scene);
+            scene.Update(0.016F);
+            passed &= Check(output.OwnsCamera() && output.acquireCount_ == 2,
+                "COR-1 a genuinely new start can acquire after ownership-loss cleanup");
+        } else {
+            passed &= Check(output.OwnsCamera() && output.acquireCount_ == 2,
+                "COR-1 normal temporary return still permits automatic resume");
+        }
     }
 
     return passed ? 0 : 1;

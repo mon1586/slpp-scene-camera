@@ -73,6 +73,9 @@ namespace ssc::runtime
             if (a_name == "AnimationChange"sv) {
                 return SceneEventType::kAnimationChange;
             }
+            if (a_name == "ActorsRelocated"sv || a_name == "HookActorsRelocated"sv) {
+                return SceneEventType::kActorsRelocated;
+            }
             if (a_name == "AnimationEnding"sv) {
                 return SceneEventType::kAnimationEnding;
             }
@@ -151,6 +154,17 @@ namespace ssc::runtime
         registered_ = true;
         logger::info("SexLab P+ scene source registered");
         return true;
+    }
+
+    std::optional<SceneControlState> SexLabPSceneSource::CollectControlState() const
+    {
+        const auto* controls = RE::ControlMap::GetSingleton();
+        const auto* player = RE::PlayerCharacter::GetSingleton();
+        auto* ui = RE::UI::GetSingleton();
+        if (!controls || !player || !player->Get3D() || !ui) {
+            return std::nullopt;
+        }
+        return SceneControlState{ controls->IsMovementControlsEnabled(), ui->GameIsPaused() };
     }
 
     SceneParticipantSnapshot SexLabPSceneSource::CollectParticipants(
@@ -304,6 +318,18 @@ namespace ssc::runtime
             const auto definingFile = DefiningFileName(quest);
             const auto* rawStrArg = a_event->strArg.c_str();
             const auto strArg = rawStrArg ? std::string_view{ rawStrArg } : std::string_view{};
+
+            // Keep raw callback diagnostics during Move Scene acceptance testing,
+            // including names which are not part of the SceneEvent contract.
+            if (quest && PluginFilenameEquals(definingFile, "SexLab.esm"sv)) {
+                try {
+                    logger::info(
+                        "MoveScene probe v1 callback: event='{}' sender={:08X} strArg='{}' numArg={}",
+                        eventName, senderID, strArg, a_event->numArg);
+                } catch (...) {
+                    // Logging failure must not prevent delivery of a scene event.
+                }
+            }
 
             static std::atomic_bool firstCallbackObserved{ false };
             if (!firstCallbackObserved.exchange(true, std::memory_order_relaxed)) {

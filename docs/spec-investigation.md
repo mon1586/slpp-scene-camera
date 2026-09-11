@@ -2,7 +2,79 @@
 
 調査・修正日: 2026-09-06。調査基点: `8434aec`、最終検証対象は本作業の変更を含むワークスペース。本書は調査証跡であり、現行の期待動作は各設計文書を参照する。修正前の不整合と、修正後の保証範囲を区別する。
 
-## 結果
+## 2026-09-11 Move Scene: 検出条件の調査（本修正前）
+
+ローカルの `F:\Games\BottleRim\mods\SexLab Framework PPLUS` を調査した。`meta.ini` のinstallationFileは `SexLab Framework PPLUS - V2.18.1.7z`。MO2の選択プロファイルは `pg13_npcface` で、このModは有効。これは配布アーカイブ名と配置済みソースの確認であり、実行中PEXとソースの一致や実ゲームでの通知順序はまだ確認していない。
+
+- `Source/Scripts/sslThreadController.psc:239` の `MoveScene` は開始通知を送らない。非対応シーンは冒頭で終了し、説明画面での取消もActorのpause/unlock前に終了する。
+- 移動に入るとActorをPausedへ移し、プレイヤーをunlockする。`SexLabUtil.SetActorMovement(PlayerRef, 1)` の後、1秒待機し、キー再押下または最大60回の0.5秒待機で移動を終える。その後movementをlockし、位置が停止するまで待ってからActorをunpauseし、`CenterOnObject(PlayerRef)` を呼ぶ。
+- `SexLabUtil.psc:175` の `SetActorMovement` は、非VRプレイヤーのunlockでAI駆動を解除し、移動入力を許可する。lockではAI駆動を有効化し、移動入力を禁止する。この入力フラグはゲーム全体の状態であり、Move Scene固有の識別子ではない。
+- `sslThreadModel.psc` の `CenterOnObject` は再配置成功時にだけ `ActorsRelocated` を送る。再配置失敗では、ユーザー選択によるシーン終了または取消があり、取消時にはこの通知を送らない。
+- 同ファイルの `SetupThreadEvent` は `SendModEvent(HookEvent, thread_id)` を使う。`thread_id` はstrArg。Papyrus用の `ModEvent` とネイティブ `ModCallbackEvent` を混同しない。
+- SSCは `ActorsRelocated` を受理せず、従来の未知通知ログも名前にAnimationを含むものだけを記録する。したがって既存ログだけでは移動開始・終了の時系列を判断できない。
+
+診断ビルド `MoveScene probe v1` は、SexLab.esm定義Questからの全ModCallbackEventを採否変更なしで記録する。既存メイン更新でプレイヤー入力許可、カメラ状態、pause、SSCのローカル所有フラグを変化時だけ記録し、その時点のworldFOVを添える。SmoothCam APIによる実所有者の照会は追加しない。プレイヤー参加開始通知から観測し、終了後の返却も含めてロード・新規ゲームまで継続する。プローブの失敗はシーン状態へ反映しない。
+
+次の判断材料は [ゲーム内調査手順](move-scene-test.md) のログ。入力許可の変化だけでMove Sceneと断定したり、lock直後を再同期完了とみなしたりしない。根拠が不足すれば、対象シーンのActor状態などの観測を追加して再調査する。本修正、自動復帰、受入確認、memo削除は未実施。
+
+2026-09-11検証: `build.cmd` 成功。既存4テスト群がすべて成功し、x64/SKSE exports/依存DLL検査も成功。これは既存手続きの回帰検証であり、診断の実ゲームでの発火やMove Sceneの検出成功を保証しない。Skyrim未起動を確認してMO2の `Sexlab Scene Camera` へ診断DLL/PDBを配置し、両ファイルのSHA256がdistと一致することを確認した。DLL SHA256: `B338CB0810FBFF041DA81CA3B015A3EF83E513BA948D792DAB974C9661E97142`。配置前のDLL/PDBと既存ログは `build/move-scene-probe-v1-backup-20260911` に退避済み。ゲーム内調査結果待ち。
+
+## 2026-09-11 Move Scene: 実測結果と返却・復帰の実装
+
+ユーザーが診断版で長押しと時間切れの両方を実施した。ログは `build/move-scene-probe-v1-20260911-2238.log` に保全した。
+
+| 区間 | 移動許可 | 再制限 | ActorsRelocated |
+| --- | --- | --- | --- |
+| 短い区間（長押しに対応すると推定） | 22:37:32.919 | 22:37:36.765 | 22:37:37.474 |
+| 長い区間（時間切れに対応すると推定） | 22:37:41.169 | 22:38:20.243 | 22:38:20.952 |
+
+両区間ともcamera=9、looking=1のまま、SSCの所有フラグが1で残り、移動中にA/Dによるプリセット切り替えが発生した。再制限から再配置通知までは両方とも約0.709秒。長い区間は実時間約39秒であり、スクリプト上の待機回数を正確な実時間30秒のタイマーとして扱えない。最終的なAnimationEndingでカメラ解放とIDLEを確認した。
+
+本修正はMove Scene専用の推定器ではなく、有効なプレイヤー参加シーンで移動が許可されたら制御を譲る規則を採用した。`ISceneSource::CollectControlState` は移動許可とpauseを返し、`MainUpdateDispatcher` が通知処理後に `IRuntimeClient::ProcessMainUpdate` を呼ぶ。SceneCameraは中断中にscene keyと開始時刻を保持し、外部所有権を返却、入力要求とpreviewを無効化する。復帰条件が成立するまではカメラUpdateで構図を評価・反映しない。
+
+再制限・非ポーズ状態の1秒継続を復帰の暫定条件とし、同じシーンのActorsRelocatedまたはAnimationChangeで待機を更新する。同期完了の保証はなく、修正版の実ゲームで姿勢と復帰タイミングを確認する。取消でActorsRelocatedがない場合も状態に基づいて再開できる。対象外カメラ状態など既存のreset条件は変更しない。復帰時の旧anchor、旧preview、候補選択を捨てて現在地から評価し直す。
+
+`build.cmd` 成功。4テスト群とDLL検査が成功。追加テストは短い／長い移動、中断中のA/D停止、移動先anchor、通知なしの再制限、連続移動、返却失敗・スレッド不一致相当の再試行、入力取得不能、pause、Editor無効化、身体入力待ち、取得拒否時の再試行抑制、Debug、終了/resetと遅延通知、別scene key、TDMの開始直後の取消、30分watchdogを対象とする。実際のスレッド・フックやSLPPの取消UIを模擬したテストではない。
+
+修正版DLL SHA256: `E3A9F220AF8AEBF4733D4A0F4FE7F068EEDA39CD6269AE5E217B57DB460FC34D`。起動ログの識別子は `MoveScene control v1 enabled`。生通知・状態変化のprobeログは受入確認用に維持する。ゲーム内受入が未完了のためmemoは保持する。
+
+Skyrim未起動を確認し、MO2のSSCへ修正版DLL/PDBを配置した。両ファイルのハッシュがdistと一致。前の診断版は `build/move-scene-control-v1-backup-20260911` に退避済み。
+
+## 2026-09-11 Move Scene: 修正版のゲーム内確認（23:15〜23:22）
+
+ユーザーから「問題なさそう」との報告。修正版のログは `build/move-scene-control-v1-20260911-2322.log` に保全した。起動識別子 `MoveScene control v1 enabled` を確認。
+
+- 23:15:29.181に移動許可で中断し、同時刻にSmoothCamの返却が成功。中断から復帰までプリセットcutと構図反映はともに0回。
+- 23:15:38.694に移動が再制限され、23:15:39.407に再配置通知を処理。23:15:40.411に新しい身体中心から構図を作り、SmoothCamの再取得と反映が成功した。
+- その後の5回のシーン終了でも、終了直前の移動許可時に返却し、AnimationEndingでIDLEとなった。これらは通常終了時の入力解放と整合し、追加のMove Scene実施回数には数えない。
+- error/criticalは0件。warningは既存の接尾辞付きAnimation通知を無視する記録のみ。
+- 移動→再配置→復帰は1区間のみ（約11.23秒）。修正版の時間切れ経路をこのログだけで検証済みとはしない。診断版での時間切れ確認と区別し、実施有無をユーザーへ確認中。
+
+確認範囲は実際の移動操作に対するユーザー報告、移動時の返却と復帰、移動中の構図変更停止、通常のシーン終了後の解放。ロード中断、取消UI、Debug／Editorとの移動競合はこのログからは確認できない。これらの状態遷移に対する自動テスト結果と、ゲーム内確認結果を混同しない。
+
+## 2026-09-11 Move Scene: 修正版の時間切れ確認（23:25〜23:29）
+
+追加ログは `build/move-scene-control-v1-20260911-2329.log` に保全した。23:25:17.149に移動許可と同時にSmoothCamの返却が成功し、23:25:56.206の再制限まで約39.06秒間、所有フラグは0。移動中のプリセットcutと構図反映は0回だった。
+
+23:25:56.918にActorsRelocatedを処理し、23:25:57.922に復帰の再評価へ進んだ。新しい身体中心を取得できたが、`No valid camera preset is available; SmoothCam remains in control` となり、この時点では再取得しなかった。これは候補がない場合の既存仕様に沿った結果であり、「時間切れ後の自動再取得成功」とは記録しない。
+
+23:26:34.500にEditorを開いた後、23:26:34.504に再取得が成功した。23:28:23.079のDebug ONで返却、23:29:03.211のDebug OFFで再取得も成功。これらはMove Scene中のDebug／Editor競合を再現したものではない。最後は23:29:38.967に返却、23:29:39.130にIDLEとなり、error/criticalは0件。
+
+前回ログと合わせて、移動中の返却維持、短い移動後の自動復帰、時間切れ後の再評価と候補なし時の通常カメラ維持、通常終了後の解放を確認した。取消UI・移動中ロード・移動中のDebug／Editor競合については引き続き実ゲーム未確認。コードの追加変更は不要と判断し、この回は結果記録のみを更新した。
+
+## Move Sceneコミット前レビュー
+
+比較基点は `f19b7e456b1259fd615c5c672ca50b1d655006b2`。変更済み作業ツリーと新規Move Scene文書を同一の対象として固定し、要求・正確性・回帰/API適合・検証品質の4観点で独立レビューを実施した。修正前の変更ファイルは `build/move-scene-review-original` に保存した。
+
+指摘を1件に確定した。**COR-1（must-fix）**: SSCが所有中と記録しているカメラを別Modが取得した直後、カメラUpdateより先に移動許可を検出すると、一時返却が `kNoOwnership` を返す。この結果を正常な返却と同一視してシーンを保持し、再制限後に古いシーンから取得を試みる。既存の「所有権喪失では対象シーンを破棄する」規則に違反する。根拠はReleaseCameraとSmoothCamCameraControl::Releaseの経路であり、競合Modを使った実ゲーム再現ではない。
+
+方式評価は現行方式を維持。SLPPの移動開始通知がないため、明示的に移動を優先する仕様には入力許可の観測が適合する。既存のメイン更新・SmoothCam APIを使用し、別フックやSLPPスクリプトの変更は不要。その他の観点から確定した欠陥はなかった。実ゲーム未確認事項は [Move Sceneテスト](move-scene-test.md) に残す。
+
+**COR-1修正・閉鎖確認済み**: 記録上の所有権を持ってReleaseへ入った場合の `kNoOwnership` は、シーン終了とreset要求へ進める。正常返却後に所有権がないケースにはこの分岐を適用しない。回帰テストは元の発生順序、遅延再配置通知で再開しないこと、正常返却との区別、他所有者への重複返却防止、新しい開始で再取得できることを検証する。指摘した独立レビュアーが元の問題の解消と共有ReleaseCamera呼出元への修正起因の退行がないことを確認した。
+
+最終の `build.cmd`、4テスト群、x64/SKSE exports/依存DLL検査は成功。DLL SHA256は `2A86EAD8B10CAFE0DD727C29CD1331A8DCE9818C0C47BF6C02457742508619C7`。競合Modによる所有権喪失の実機再現は未実施であり、閉鎖根拠はソース・自動テスト・ビルド。未解決のmust-fix指摘はない。ユーザーの指示に従いmemo.mdは削除し、残るゲーム内検証の限界は文書に維持する。
+
+## 既存の調査結果
 
 G01〜G12について、現行動作と保証できない範囲を各設計文書へ反映した。旧説明を注記で現行仕様に残す方式はやめ、FILEの旧手順・失敗表、RT・HOOKの旧mailbox方式と全camera state対応の説明を削除した。
 

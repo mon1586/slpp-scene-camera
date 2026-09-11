@@ -12,6 +12,7 @@ namespace ssc::runtime
         static SexLabPSceneSource* GetSingleton() noexcept;
 
         [[nodiscard]] bool Register(SceneEventHandler a_handler) override;
+        [[nodiscard]] std::optional<SceneControlState> CollectControlState() const override;
         [[nodiscard]] SceneParticipantSnapshot CollectParticipants(
             const SceneKey& a_key) const override;
         [[nodiscard]] std::optional<SceneAnchorSamples> CollectAnchorInput(

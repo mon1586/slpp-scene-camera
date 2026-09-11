@@ -33,6 +33,12 @@ namespace ssc::runtime
         Vec3 playerActorForward;
     };
 
+    struct SceneControlState
+    {
+        bool movementEnabled{ false };
+        bool paused{ false };
+    };
+
     struct VisibilityTarget
     {
         std::size_t participantIndex{ 0 };

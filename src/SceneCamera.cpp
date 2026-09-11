@@ -105,6 +105,9 @@ namespace ssc
         case runtime::SceneEventType::kAnimationChange:
             OnAnimationChange(a_event);
             break;
+        case runtime::SceneEventType::kActorsRelocated:
+            OnActorsRelocated(a_event);
+            break;
         case runtime::SceneEventType::kAnimationEnding:
             OnAnimationEnding(a_event);
             break;
@@ -201,6 +204,9 @@ namespace ssc
             return;
         }
         sceneEvaluationReadyAt_ = now_() + kAnimationChangeDelay;
+        if (movementSuspended_) {
+            movementResumeReadyAt_ = sceneEvaluationReadyAt_;
+        }
         sceneEvaluationPending_.store(true, std::memory_order_release);
         presetSwitchEnabled_.store(false, std::memory_order_release);
         presetStepRequested_.store(0, std::memory_order_release);
@@ -208,6 +214,97 @@ namespace ssc
             std::chrono::duration_cast<std::chrono::milliseconds>(kAnimationChangeDelay).count(),
             a_event.key.sourceID,
             a_event.key.instanceID);
+    }
+
+    void SceneCamera::OnActorsRelocated(const runtime::SceneEvent& a_event)
+    {
+        if (!ProcessPendingReset("pending reset"sv) ||
+            !session_.IsActive() || !session_.Matches(a_event.key)) {
+            return;
+        }
+        logger::info("ActorsRelocated {:08X}/{}; waiting for relocated pose",
+            a_event.key.sourceID, a_event.key.instanceID);
+        if (movementSuspended_) {
+            movementResumeReadyAt_ = now_() + kAnimationChangeDelay;
+        } else {
+            sceneEvaluationReadyAt_ = now_() + kAnimationChangeDelay;
+            sceneEvaluationPending_.store(true, std::memory_order_release);
+            presetSwitchEnabled_.store(false, std::memory_order_release);
+            presetStepRequested_.store(0, std::memory_order_release);
+        }
+    }
+
+    void SceneCamera::SuspendForMovement()
+    {
+        movementSuspended_ = true;
+        movementResumeReadyAt_.reset();
+        targetUnlockQueued_.store(false, std::memory_order_release);
+        sceneEvaluationPending_.store(false, std::memory_order_release);
+        sceneEvaluationReadyAt_ = {};
+        presetSwitchEnabled_.store(false, std::memory_order_release);
+        presetStepRequested_.store(0, std::memory_order_release);
+        debugResumePending_.store(false, std::memory_order_release);
+        if (previewService_) {
+            previewService_->InvalidatePreviewSession();
+        }
+        visibilityEvaluation_.reset();
+        if (debugVisualization_) {
+            debugVisualization_->HideAnchor();
+            debugVisualization_->HideVisibility();
+        }
+        PublishPreviewFeedback(false, "Player movement enabled; scene camera suspended");
+        logger::info("Scene camera suspended: player movement enabled");
+    }
+
+    void SceneCamera::ProcessMainUpdate()
+    {
+        if (!session_.IsActive() || resetRequested_.load(std::memory_order_acquire)) {
+            return;
+        }
+        const auto controls = sceneSource_ ? sceneSource_->CollectControlState() : std::nullopt;
+        if (controls && controls->movementEnabled && !movementSuspended_) {
+            SuspendForMovement();
+        }
+        if (!movementSuspended_) {
+            return;
+        }
+        const auto now = now_();
+        if (now - activeSince_ > kMaximumSceneDuration) {
+            Restore("scene watchdog timeout during movement suspension"sv);
+            return;
+        }
+        if (previewService_) {
+            // A UI request published during suspension must not survive into resume.
+            previewService_->InvalidatePreviewSession();
+        }
+        const auto targetReturned = CancelTargetUnlock();
+        const auto cameraReturned = ReleaseCamera("player movement enabled"sv, false);
+        if (!controls || controls->movementEnabled || controls->paused ||
+            !targetReturned || !cameraReturned) {
+            movementResumeReadyAt_.reset();
+            return;
+        }
+        if (!movementResumeReadyAt_) {
+            movementResumeReadyAt_ = now + kAnimationChangeDelay;
+            logger::info("Scene movement relocked; resume settling for 1000 ms");
+            return;
+        }
+        if (now < *movementResumeReadyAt_) {
+            return;
+        }
+
+        movementSuspended_ = false;
+        movementResumeReadyAt_.reset();
+        anchor_.reset();
+        activePresetID_.reset();
+        initialPresetSelectionDone_ = false;
+        anchorInputUnavailable_ = false;
+        anchorLOSTimeSeconds_ = 0.0F;
+        anchorLOSMetrics_ = {};
+        appliedPreviewRequest_.reset();
+        sceneEvaluationReadyAt_ = now;
+        sceneEvaluationPending_.store(true, std::memory_order_release);
+        logger::info("Scene camera resume queued: movement relocked; fresh anchor required");
     }
 
     void SceneCamera::OnAnimationEnding(const runtime::SceneEvent& a_event)
@@ -238,6 +335,12 @@ namespace ssc
     void SceneCamera::Update(float a_deltaSeconds)
     {
         if (!ProcessPendingReset("pending reset"sv)) {
+            return;
+        }
+        if (movementSuspended_) {
+            if (previewService_) {
+                previewService_->InvalidatePreviewSession();
+            }
             return;
         }
         if (targetUnlockQueued_.exchange(false, std::memory_order_acq_rel) && session_.IsActive()) {
@@ -998,6 +1101,16 @@ namespace ssc
     {
         if (cameraControl_ && cameraControl_->OwnsCamera()) {
             const auto releaseResult = cameraControl_->Release();
+            if (releaseResult == runtime::CameraReleaseResult::kNoOwnership) {
+                // We entered with recorded ownership. Losing it before/during
+                // release is not a successful temporary handoff. Do not resume
+                // this session later, even when the caller asked to retry a
+                // failed temporary return without resetting the scene.
+                logger::warn("Camera ownership lost during release; discarding the scene");
+                StopSceneWork();
+                resetRequested_.store(true, std::memory_order_release);
+                return false;
+            }
             if (releaseResult == runtime::CameraReleaseResult::kWrongThread) {
                 if (a_requestResetOnFailure) {
                     resetRequested_.store(true, std::memory_order_release);
@@ -1093,6 +1206,8 @@ namespace ssc
 
     void SceneCamera::StopSceneWork() noexcept
     {
+        movementSuspended_ = false;
+        movementResumeReadyAt_.reset();
         targetUnlockQueued_.store(false, std::memory_order_release);
         session_.BeginRestore();
         sceneEvaluationPending_.store(false, std::memory_order_release);

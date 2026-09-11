@@ -40,6 +40,7 @@ namespace ssc
         [[nodiscard]] bool NeedsUpdate() const noexcept override;
         [[nodiscard]] bool AllowsUpdateWhilePaused() const noexcept override;
         void HandleSceneEvent(const runtime::SceneEvent& a_event) override;
+        void ProcessMainUpdate() override;
 
         void Update(float a_deltaSeconds) override;
         void Reset(std::string_view a_reason) override;
@@ -52,6 +53,8 @@ namespace ssc
         void OnAnimationStarting(const runtime::SceneEvent& a_event);
         void OnAnimationStart(const runtime::SceneEvent& a_event);
         void OnAnimationChange(const runtime::SceneEvent& a_event);
+        void OnActorsRelocated(const runtime::SceneEvent& a_event);
+        void SuspendForMovement();
         void OnAnimationEnding(const runtime::SceneEvent& a_event);
         void OnAnimationEnd(const runtime::SceneEvent& a_event);
         void Prepare(
@@ -108,6 +111,8 @@ namespace ssc
         std::atomic_bool targetUnlockPending_{ false };
         Clock::time_point targetUnlockDeadline_{};
         SceneSession session_;
+        bool movementSuspended_{ false };
+        std::optional<Clock::time_point> movementResumeReadyAt_;
         runtime::SceneParticipantSnapshot participants_;
         std::chrono::steady_clock::time_point activeSince_{};
         std::chrono::steady_clock::time_point sceneEvaluationReadyAt_{};

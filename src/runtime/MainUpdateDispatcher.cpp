@@ -21,5 +21,6 @@ namespace ssc::runtime
         for (auto& work : batch) {
             work();
         }
+        a_client.ProcessMainUpdate();
     }
 }

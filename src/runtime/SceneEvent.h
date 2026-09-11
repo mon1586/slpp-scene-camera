@@ -11,6 +11,7 @@ namespace ssc::runtime
         kAnimationStarting,
         kAnimationStart,
         kAnimationChange,
+        kActorsRelocated,
         kAnimationEnding,
         kAnimationEnd,
     };
@@ -25,6 +26,8 @@ namespace ssc::runtime
             return "AnimationStart"sv;
         case SceneEventType::kAnimationChange:
             return "AnimationChange"sv;
+        case SceneEventType::kActorsRelocated:
+            return "ActorsRelocated"sv;
         case SceneEventType::kAnimationEnding:
             return "AnimationEnding"sv;
         case SceneEventType::kAnimationEnd:

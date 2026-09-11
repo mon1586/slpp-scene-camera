@@ -34,6 +34,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
     try {
         ssc::runtime::PluginRuntime::InitializeLog();
         logger::info("Sexlab Scene Camera POC 0.1.0 loading");
+        logger::info("MoveScene control v1 enabled: yield on movement unlock; resume after relock settles");
 
         SKSE::Init(a_skse, false);
         if (REL::Module::IsVR()) {
