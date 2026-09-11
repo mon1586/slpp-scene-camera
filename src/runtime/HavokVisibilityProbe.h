@@ -13,5 +13,11 @@ namespace ssc::runtime
             const Vec3& a_start,
             const Vec3& a_target,
             std::uint32_t a_targetActorID) noexcept override;
+
+    private:
+        [[nodiscard]] static VisibilityRayHit TraceDirection(
+            const Vec3& a_start,
+            const Vec3& a_target,
+            std::uint32_t a_targetActorID) noexcept;
     };
 }

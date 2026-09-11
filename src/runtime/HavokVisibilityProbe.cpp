@@ -66,6 +66,23 @@ namespace ssc::runtime
         const Vec3& a_target,
         std::uint32_t a_targetActorID) noexcept
     {
+        // Cast from the anchor so a camera below terrain is approached from
+        // the front of the ground surface. No second cast is needed.
+        auto result = TraceDirection(a_target, a_start, a_targetActorID);
+        if (result.querySucceeded && !result.reachesTarget) {
+            result.fraction = 1.0F - result.fraction;
+        }
+        // The physical cast starts at the anchor, not the camera. Preserve its
+        // world-space hit/normal but do not label an anchor hit as camera-inside.
+        result.startsInsideCollision = false;
+        return result;
+    }
+
+    VisibilityRayHit HavokVisibilityProbe::TraceDirection(
+        const Vec3& a_start,
+        const Vec3& a_target,
+        std::uint32_t a_targetActorID) noexcept
+    {
         VisibilityRayHit result;
         if (!IsFinite(a_start) || !IsFinite(a_target)) {
             result.object = "invalid ray coordinates";
