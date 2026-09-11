@@ -1,4 +1,3 @@
-#include "core/CandidateSelection.h"
 #include "runtime/WorldDebugVisualization.h"
 
 #include "runtime/EditHotkeySettings.h"
@@ -257,14 +256,8 @@ namespace ssc::runtime
         const auto count = snapshot->candidates.size();
         const auto current = std::min(
             selectedCandidate_.load(std::memory_order_acquire), count - 1);
-        const auto nextID = core::CandidateSelector{}.Step(
-            snapshot->candidates, snapshot->candidates[current].presetID, a_direction);
-        if (!nextID) {
-            return;
-        }
-        const auto next = static_cast<std::size_t>(std::ranges::find(
-            snapshot->candidates, *nextID, &core::CameraCandidateVisibility::presetID) -
-            snapshot->candidates.begin());
+        const auto next = a_direction > 0 ?
+            (current + 1) % count : (current == 0 ? count - 1 : current - 1);
         selectedCandidate_.store(next, std::memory_order_release);
         logger::info("Debug preset selected: '{}' ({}/{})",
             snapshot->candidates[next].presetID,
