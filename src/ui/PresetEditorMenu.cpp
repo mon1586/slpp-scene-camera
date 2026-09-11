@@ -36,6 +36,8 @@ namespace ssc::ui
             SKSEMenuFramework::Model::InputEvent* hotkeyInput{ nullptr };
             SKSEMenuFramework::Model::HudElement* toolbarVisibility{ nullptr };
             std::array<char, 128> idBuffer{};
+            std::array<char, 128> nameBuffer{};
+            std::string savedName;
             std::string selectedID;
             std::string pendingID;
             runtime::PresetTransform savedTransform{};
@@ -87,6 +89,20 @@ namespace ssc::ui
             return state.creating ? std::string{ state.idBuffer.data() } : state.selectedID;
         }
 
+        void SetNameBuffer(std::string_view a_name)
+        {
+            state.nameBuffer.fill('\0');
+            std::copy_n(a_name.data(), std::min(a_name.size(), state.nameBuffer.size() - 1),
+                state.nameBuffer.data());
+        }
+
+        [[nodiscard]] std::string PresetName(std::string_view a_id)
+        {
+            const auto snapshot = runtime::PresetRepository::GetSingleton()->Snapshot();
+            const auto preset = std::ranges::find(*snapshot, a_id, &runtime::CameraPreset::id);
+            return preset != snapshot->end() ? preset->name : std::string{ a_id };
+        }
+
         void PublishDraft()
         {
             if (const auto error = runtime::ValidatePresetTransform(state.draftTransform);
@@ -104,6 +120,8 @@ namespace ssc::ui
         {
             state.selectedID = a_preset.id;
             SetIDBuffer(a_preset.id);
+            state.savedName = a_preset.name;
+            SetNameBuffer(a_preset.name);
             state.savedTransform = a_preset.transform;
             state.draftTransform = a_preset.transform;
             state.creating = false;
@@ -170,6 +188,8 @@ namespace ssc::ui
         {
             state.selectedID.clear();
             SetIDBuffer(NextPresetID());
+            state.savedName.clear();
+            SetNameBuffer("New preset");
             state.savedTransform = kNewPresetTransform;
             state.draftTransform = kNewPresetTransform;
             state.creating = true;
@@ -186,6 +206,8 @@ namespace ssc::ui
             }
             state.selectedID.clear();
             SetIDBuffer(NextPresetID());
+            state.savedName.clear();
+            SetNameBuffer("New preset");
             state.savedTransform = *feedback->currentTransform;
             state.draftTransform = *feedback->currentTransform;
             state.creating = true;
@@ -201,7 +223,7 @@ namespace ssc::ui
                 return false;
             }
             const auto id = DraftID();
-            const runtime::CameraPreset candidate{ id, state.draftTransform };
+            const runtime::CameraPreset candidate{ id, state.draftTransform, state.nameBuffer.data() };
             if (const auto error = runtime::ValidateCameraPreset(candidate); !error.empty()) {
                 state.message = error;
                 return false;
@@ -211,13 +233,15 @@ namespace ssc::ui
                 runtime::PresetRepository::GetSingleton()->Create(candidate) :
                 runtime::PresetRepository::GetSingleton()->Update(
                     state.selectedID,
-                    state.draftTransform);
+                    state.draftTransform,
+                    candidate.name);
             if (!result.succeeded) {
                 state.message = result.error;
                 return false;
             }
 
             state.selectedID = id;
+            state.savedName = candidate.name;
             state.savedTransform = state.draftTransform;
             state.creating = false;
             state.dirty = false;
@@ -242,6 +266,7 @@ namespace ssc::ui
                 SelectFirstPreset();
                 return;
             }
+            SetNameBuffer(state.savedName);
             state.draftTransform = state.savedTransform;
             state.dirty = false;
             state.message = "Changes discarded";
@@ -352,7 +377,7 @@ namespace ssc::ui
                     ImGuiMCP::ImGuiWindowFlags_AlwaysAutoResize)) {
                 return;
             }
-            ImGuiMCP::Text("Delete preset '%s'?", state.selectedID.c_str());
+            ImGuiMCP::Text("Delete preset '%s'?", state.savedName.c_str());
             if (ImGuiMCP::Button("Delete")) {
                 const auto result = runtime::PresetRepository::GetSingleton()->Delete(state.selectedID);
                 if (result.succeeded) {
@@ -486,9 +511,7 @@ namespace ssc::ui
                     ImGuiMCP::Text("Debug preset: %s", label.c_str());
                     ImGuiMCP::TextDisabled("[A/D] Inspect    SmoothCam in control");
                 } else if (const auto currentPresetID = CurrentPresetID(feedback.get())) {
-                    ImGuiMCP::Text("Preset: %.*s",
-                        static_cast<int>(currentPresetID->size()),
-                        currentPresetID->data());
+                    ImGuiMCP::Text("Preset: %s", PresetName(*currentPresetID).c_str());
                     const auto keyName = runtime::EditHotkeyName(
                         runtime::EditHotkeySettings::GetSingleton()->EditHotkey());
                     ImGuiMCP::TextDisabled(
@@ -655,8 +678,8 @@ namespace ssc::ui
                                 core::CandidateFailureReasonName(summary.failureReason));
                         }
                         const auto label = fmt::format(
-                            "{} - {}##dashboard-{}",
-                            preset.id,
+                            "{} - {}###dashboard-{}",
+                            preset.name,
                             status,
                             preset.id);
                         ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, color);
@@ -782,12 +805,13 @@ namespace ssc::ui
 
                 ImGuiMCP::BeginDisabled(!canEdit);
                 const auto previewLabel = state.creating ? "<new preset>" :
-                    (state.selectedID.empty() ? "<none>" : state.selectedID.c_str());
+                    (state.selectedID.empty() ? "<none>" : state.savedName.c_str());
                 if (ImGuiMCP::BeginCombo("Preset", previewLabel)) {
                     if (snapshot) {
                         for (const auto& preset : *snapshot) {
                             const auto selected = !state.creating && preset.id == state.selectedID;
-                            if (ImGuiMCP::Selectable(preset.id.c_str(), selected) && !selected) {
+                            const auto label = fmt::format("{}###preset-{}", preset.name, preset.id);
+                            if (ImGuiMCP::Selectable(label.c_str(), selected) && !selected) {
                                 RequestAction(PendingAction::kSelect, preset.id);
                             }
                         }
@@ -816,11 +840,12 @@ namespace ssc::ui
                 }
 
                 ImGuiMCP::Separator();
-                ImGuiMCP::BeginDisabled(!state.creating);
-                if (ImGuiMCP::InputText("ID", state.idBuffer.data(), state.idBuffer.size())) {
-                    state.dirty = true;
+                ImGuiMCP::TextDisabled("ID: %s", DraftID().c_str());
+                if (ImGuiMCP::InputText("Name", state.nameBuffer.data(), state.nameBuffer.size())) {
+                    state.dirty = state.creating || std::string_view{ state.nameBuffer.data() } != state.savedName ||
+                        !SameTransform(state.draftTransform, state.savedTransform);
+                    PublishDraft();
                 }
-                ImGuiMCP::EndDisabled();
 
                 ImGuiMCP::TextDisabled("Screen-relative framing");
                 bool transformChanged = false;
@@ -848,7 +873,7 @@ namespace ssc::ui
                     0.25F, kMinimumFOVOffsetDegrees, kMaximumFOVOffsetDegrees, "%.1f deg",
                     ImGuiMCP::ImGuiSliderFlags_AlwaysClamp);
                 if (transformChanged) {
-                    state.dirty = state.creating ||
+                    state.dirty = state.creating || std::string_view{ state.nameBuffer.data() } != state.savedName ||
                         !SameTransform(state.draftTransform, state.savedTransform);
                     PublishDraft();
                 }

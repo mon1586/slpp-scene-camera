@@ -424,178 +424,62 @@ int main()
     PresetRepository repository;
     const auto validPath = NextTemporaryPath();
     const auto validJson = R"json({
-        "schemaVersion": 1,
+        "schemaVersion": 5,
         "futureTopLevel": true,
         "presets": [
             {
-                "id": "default",
-                "offset": { "right": 1, "forward": -200.5, "up": 60 },
+                "id": "default", "name": "Default",
+                "framingOffset": { "right": 1, "up": 60 },
+                "orbit": { "yawDegrees": 0, "pitchDegrees": 10, "distance": 200 },
+                "fovOffsetDegrees": -15,
                 "futurePresetField": "ignored"
             },
             {
-                "id": "close",
-                "offset": { "right": -10, "forward": -80, "up": 20, "futureOffset": 4 }
+                "id": "close", "name": "Close",
+                "framingOffset": { "right": -10, "up": 20 },
+                "orbit": { "yawDegrees": 0, "pitchDegrees": 0, "distance": 80 },
+                "fovOffsetDegrees": 0
             }
         ]
     })json";
     passed &= Check(WriteText(validPath, validJson), "valid preset fixture can be written");
     const auto validLoad = repository.LoadFromFile(validPath);
-    passed &= Check(validLoad.succeeded, "valid schema loads successfully");
-    passed &= Check(validLoad.presetCount == 2, "loader retains every preset");
+    passed &= Check(validLoad.succeeded && validLoad.presetCount == 2,
+        "schema 5 loads all presets");
     const auto validSnapshot = repository.Snapshot();
-    passed &= Check(validSnapshot && validSnapshot->size() == 2,
-        "valid immutable snapshot exposes every preset");
-    if (validSnapshot && validSnapshot->size() == 2) {
-        passed &= Check((*validSnapshot)[0].id == "default", "preset order is retained");
-        const auto expectedDistance = static_cast<float>(std::hypot(1.0, 200.5, 60.0));
-        passed &= CheckNear((*validSnapshot)[0].transform.framingOffset.right, 0.0F,
-            "legacy offset migration keeps horizontal framing centered");
-        passed &= CheckNear((*validSnapshot)[0].transform.framingOffset.up, 0.0F,
-            "legacy offset migration keeps vertical framing centered");
-        passed &= CheckNear((*validSnapshot)[0].transform.orbit.distance, expectedDistance,
-            "legacy offset migration retains camera distance");
-        passed &= CheckNear((*validSnapshot)[0].transform.fovOffsetDegrees, 0.0F,
-            "legacy schema migration keeps the current FOV");
-        const auto migratedPose = poseCalculator.Evaluate(
-            SceneAnchor{ { 0.0F, 0.0F, 0.0F }, { 0.0F, 1.0F, 0.0F } },
-            CameraRig{
-                {
-                    (*validSnapshot)[0].transform.framingOffset.right,
-                    (*validSnapshot)[0].transform.framingOffset.up,
-                },
-                {
-                    (*validSnapshot)[0].transform.orbit.yawDegrees,
-                    (*validSnapshot)[0].transform.orbit.pitchDegrees,
-                    (*validSnapshot)[0].transform.orbit.distance,
-                },
-            });
-        passed &= Check(migratedPose.has_value(), "migrated legacy preset evaluates");
-        if (migratedPose) {
-            passed &= CheckNear(migratedPose->position.x, 1.0F,
-                "legacy migration retains right position");
-            passed &= CheckNear(migratedPose->position.y, -200.5F,
-                "legacy migration retains forward position");
-            passed &= CheckNear(migratedPose->position.z, 60.0F,
-                "legacy migration retains up position");
-        }
-        passed &= Check((*validSnapshot)[1].id == "close", "second preset is retained");
+    if (validSnapshot->size() == 2) {
+        passed &= Check(validSnapshot->front().id == "default" &&
+            validSnapshot->front().name == "Default", "ID and display name load independently");
+        passed &= CheckNear(validSnapshot->front().transform.fovOffsetDegrees, -15.0F,
+            "schema 5 retains FOV offset");
     }
-
-    const auto version2Path = NextTemporaryPath();
-    passed &= Check(WriteText(version2Path, R"json({
-        "schemaVersion": 2,
-        "presets": [
-            {
-                "id": "version-2",
-                "pivotOffset": { "right": 10, "forward": 20, "up": 30 },
-                "orbit": { "yawDegrees": 90, "pitchDegrees": 0, "distance": 100 }
-            }
-        ]
-    })json"), "version 2 migration fixture can be written");
-    PresetRepository version2Repository;
-    const auto version2Load = version2Repository.LoadFromFile(version2Path);
-    passed &= Check(version2Load.succeeded && version2Load.presetCount == 1,
-        "version 2 schema migrates successfully");
-    if (version2Load.succeeded) {
-        const auto& migrated = version2Repository.Snapshot()->front().transform;
-        passed &= CheckNear(migrated.framingOffset.right, 20.0F,
-            "version 2 pivot offset migrates along rotated screen right");
-        passed &= CheckNear(migrated.framingOffset.up, 30.0F,
-            "version 2 pivot up migrates to screen up");
-        passed &= CheckNear(migrated.orbit.distance, 110.0F,
-            "version 2 view-axis pivot component folds into orbit distance");
-        const auto migratedVersion2Pose = poseCalculator.Evaluate(
-            SceneAnchor{ { 0.0F, 0.0F, 0.0F }, { 0.0F, 1.0F, 0.0F } },
-            CameraRig{
-                { migrated.framingOffset.right, migrated.framingOffset.up },
-                {
-                    migrated.orbit.yawDegrees,
-                    migrated.orbit.pitchDegrees,
-                    migrated.orbit.distance,
-                },
-            });
-        passed &= Check(migratedVersion2Pose.has_value(),
-            "migrated version 2 preset evaluates");
-        if (migratedVersion2Pose) {
-            passed &= CheckNear(migratedVersion2Pose->position.x, 110.0F,
-                "version 2 migration retains camera X");
-            passed &= CheckNear(migratedVersion2Pose->position.y, 20.0F,
-                "version 2 migration retains camera Y");
-            passed &= CheckNear(migratedVersion2Pose->position.z, 30.0F,
-                "version 2 migration retains camera Z");
-        }
-    }
-    RemoveFile(version2Path);
-
-    const auto version3Path = NextTemporaryPath();
-    passed &= Check(WriteText(version3Path, R"json({
-        "schemaVersion": 3,
-        "presets": [
-            {
-                "id": "version-3",
-                "framingOffset": { "right": 5, "up": 25 },
-                "orbit": { "yawDegrees": 15, "pitchDegrees": 5, "distance": 180 }
-            }
-        ]
-    })json"), "version 3 migration fixture can be written");
-    PresetRepository version3Repository;
-    const auto version3Load = version3Repository.LoadFromFile(version3Path);
-    passed &= Check(version3Load.succeeded && version3Load.presetCount == 1,
-        "version 3 schema migrates successfully");
-    if (version3Load.succeeded) {
-        passed &= CheckNear(
-            version3Repository.Snapshot()->front().transform.fovOffsetDegrees,
-            0.0F,
-            "version 3 schema migrates with no FOV change");
-    }
-    RemoveFile(version3Path);
-
-    const auto version4Path = NextTemporaryPath();
-    passed &= Check(WriteText(version4Path, R"json({
-        "schemaVersion": 4,
-        "presets": [
-            {
-                "id": "version-4",
-                "framingOffset": { "right": 0, "up": 60 },
-                "orbit": { "yawDegrees": 0, "pitchDegrees": 10, "distance": 200 },
-                "fovOffsetDegrees": -15
-            }
-        ]
-    })json"), "version 4 FOV fixture can be written");
-    PresetRepository version4Repository;
-    const auto version4Load = version4Repository.LoadFromFile(version4Path);
-    passed &= Check(version4Load.succeeded && version4Load.presetCount == 1,
-        "version 4 schema loads successfully");
-    if (version4Load.succeeded) {
-        passed &= CheckNear(
-            version4Repository.Snapshot()->front().transform.fovOffsetDegrees,
-            -15.0F,
-            "version 4 schema retains the FOV offset");
-    }
-    RemoveFile(version4Path);
 
     passed &= Check(repository.Create({
         "wide",
         { { 25.0F, 100.0F }, { 30.0F, 10.0F, 350.0F } },
+        "wide",
     }).succeeded, "create persists a new preset");
     passed &= Check(repository.Snapshot()->size() == 3,
         "create publishes all presets");
     passed &= Check(!repository.Create({
         "wide",
         { {}, { 0.0F, 0.0F, 100.0F } },
+        "wide",
     }).succeeded, "create rejects a duplicate id");
     passed &= Check(!repository.Create({
         "zero-distance",
         { {}, { 0.0F, 0.0F, 0.0F } },
+        "zero-distance",
     }).succeeded, "create rejects zero orbit distance");
     passed &= Check(!repository.Create({
         "too-close",
         { {}, { 0.0F, 0.0F, 1.0e-8F } },
+        "too-close",
     }).succeeded, "create rejects an orbit distance too close to derive a view direction");
 
     passed &= Check(repository.Update(
         "default",
-        { { 20.0F, 80.0F }, { 45.0F, -15.0F, 240.0F }, 20.0F }).succeeded,
+        { { 20.0F, 80.0F }, { 45.0F, -15.0F, 240.0F }, 20.0F }, "Renamed").succeeded,
         "update persists an existing preset");
     passed &= CheckNear(repository.Snapshot()->front().transform.framingOffset.right, 20.0F,
         "update publishes the changed framing offset");
@@ -605,8 +489,12 @@ int main()
         "update publishes the changed FOV offset");
     passed &= Check(!repository.Update(
         "missing",
-        { {}, { 0.0F, 0.0F, 100.0F } }).succeeded,
+        { {}, { 0.0F, 0.0F, 100.0F } }, "Missing").succeeded,
         "update rejects an unknown id");
+
+    passed &= Check(repository.Snapshot()->front().id == "default" &&
+        repository.Snapshot()->front().name == "Renamed",
+        "rename changes the display name while preserving identity and order");
 
     passed &= Check(repository.Delete("close").succeeded,
         "delete removes an existing preset");
@@ -620,6 +508,8 @@ int main()
     passed &= Check(persistedLoad.succeeded && persistedLoad.presetCount == 2,
         "CRUD result can be loaded from disk");
     if (persistedReader.Snapshot()->size() == 2) {
+        passed &= Check((*persistedReader.Snapshot())[0].name == "Renamed",
+            "renamed display name survives reload");
         passed &= Check((*persistedReader.Snapshot())[0].id == "default",
             "update retains preset order");
         passed &= CheckNear(
@@ -641,7 +531,7 @@ int main()
     passed &= Check(reloadResult.succeeded && reloadResult.presetCount == 2,
         "repository reloads its storage path");
 
-    passed &= Check(WriteText(validPath, R"json({ "schemaVersion": 1, "presets": [)json"),
+    passed &= Check(WriteText(validPath, R"json({ "schemaVersion": 5, "presets": [)json"),
         "broken reload fixture can be written");
     const auto brokenReload = repository.Reload();
     passed &= Check(!brokenReload.succeeded,
@@ -661,13 +551,14 @@ int main()
     passed &= Check(repository.Create({
         "recovered-missing",
         { {}, { 0.0F, 0.0F, 200.0F } },
+        "recovered-missing",
     }).succeeded, "missing preset file can be recovered by creating a preset");
     RemoveFile(missingPath);
 
     const auto corruptRecoveryPath = NextTemporaryPath();
     passed &= Check(WriteText(
         corruptRecoveryPath,
-        R"json({ "schemaVersion": 3, "presets": [)json"),
+        R"json({ "schemaVersion": 5, "presets": [)json"),
         "corrupt recovery fixture can be written");
     PresetRepository corruptRecoveryRepository;
     passed &= Check(!corruptRecoveryRepository.LoadFromFile(corruptRecoveryPath).succeeded,
@@ -675,6 +566,7 @@ int main()
     passed &= Check(corruptRecoveryRepository.Create({
         "recovered-corrupt",
         { {}, { 0.0F, 0.0F, 200.0F } },
+        "recovered-corrupt",
     }).succeeded, "corrupt preset file can be recovered by creating a preset");
     auto corruptBackupPath = corruptRecoveryPath;
     corruptBackupPath += ".invalid.bak";
@@ -687,58 +579,26 @@ int main()
     RemoveFile(corruptRecoveryPath);
     RemoveFile(corruptBackupPath);
 
-    const std::array<std::pair<std::string_view, std::string_view>, 16> invalidDocuments{{
-        { "broken JSON", R"json({ "schemaVersion": 1, "presets": [)json" },
-        { "unknown schema version", R"json({ "schemaVersion": 5, "presets": [] })json" },
-        { "missing required field", R"json({ "schemaVersion": 1, "presets": [
-            { "id": "x", "offset": { "right": 0, "forward": -10 } }
-        ] })json" },
-        { "wrong member type", R"json({ "schemaVersion": 1, "presets": [
-            { "id": "x", "offset": { "right": "zero", "forward": -10, "up": 0 } }
-        ] })json" },
-        { "non-finite numeric result", R"json({ "schemaVersion": 1, "presets": [
-            { "id": "x", "offset": { "right": 1e9999, "forward": -10, "up": 0 } }
-        ] })json" },
-        { "duplicate id", R"json({ "schemaVersion": 1, "presets": [
-            { "id": "x", "offset": { "right": 0, "forward": -10, "up": 0 } },
-            { "id": "x", "offset": { "right": 1, "forward": -20, "up": 1 } }
-        ] })json" },
-        { "empty id", R"json({ "schemaVersion": 1, "presets": [
-            { "id": "", "offset": { "right": 0, "forward": -10, "up": 0 } }
-        ] })json" },
-        { "camera at anchor", R"json({ "schemaVersion": 1, "presets": [
-            { "id": "x", "offset": { "right": 0, "forward": 0, "up": 0 } }
-        ] })json" },
-        { "non-array presets", R"json({ "schemaVersion": 1, "presets": {} })json" },
-        { "missing v2 orbit", R"json({ "schemaVersion": 2, "presets": [
-            { "id": "x", "pivotOffset": { "right": 0, "forward": 0, "up": 0 } }
-        ] })json" },
-        { "v2 yaw outside range", R"json({ "schemaVersion": 2, "presets": [
-            { "id": "x", "pivotOffset": { "right": 0, "forward": 0, "up": 0 },
-              "orbit": { "yawDegrees": 181, "pitchDegrees": 0, "distance": 100 } }
-        ] })json" },
-        { "v2 zero distance", R"json({ "schemaVersion": 2, "presets": [
-            { "id": "x", "pivotOffset": { "right": 0, "forward": 0, "up": 0 },
-              "orbit": { "yawDegrees": 0, "pitchDegrees": 0, "distance": 0 } }
-        ] })json" },
-        { "missing v3 framing member", R"json({ "schemaVersion": 3, "presets": [
-            { "id": "x", "framingOffset": { "right": 0 },
-              "orbit": { "yawDegrees": 0, "pitchDegrees": 0, "distance": 100 } }
-        ] })json" },
-        { "missing v4 FOV offset", R"json({ "schemaVersion": 4, "presets": [
-            { "id": "x", "framingOffset": { "right": 0, "up": 0 },
-              "orbit": { "yawDegrees": 0, "pitchDegrees": 0, "distance": 100 } }
-        ] })json" },
-        { "v4 FOV offset outside range", R"json({ "schemaVersion": 4, "presets": [
-            { "id": "x", "framingOffset": { "right": 0, "up": 0 },
-              "orbit": { "yawDegrees": 0, "pitchDegrees": 0, "distance": 100 },
-              "fovOffsetDegrees": 161 }
-        ] })json" },
-        { "v4 FOV offset wrong type", R"json({ "schemaVersion": 4, "presets": [
-            { "id": "x", "framingOffset": { "right": 0, "up": 0 },
-              "orbit": { "yawDegrees": 0, "pitchDegrees": 0, "distance": 100 },
-              "fovOffsetDegrees": "wide" }
-        ] })json" },
+    const std::array<std::pair<std::string_view, std::string_view>, 19> invalidDocuments{{
+        { "broken JSON", R"json({ "schemaVersion": 5, "presets": [)json" },
+        { "unknown schema version", R"json({"schemaVersion":6,"presets":[]})json" },
+        { "old schema version", R"json({"schemaVersion":4,"presets":[{"id":"x","name":"Name","framingOffset":{"right":0,"up":0},"orbit":{"yawDegrees":0,"pitchDegrees":0,"distance":100},"fovOffsetDegrees":0}]})json" },
+        { "non-array presets", R"json({"schemaVersion":5,"presets":{}})json" },
+        { "missing name", R"json({"schemaVersion":5,"presets":[{"id":"x","framingOffset":{"right":0,"up":0},"orbit":{"yawDegrees":0,"pitchDegrees":0,"distance":100},"fovOffsetDegrees":0}]})json" },
+        { "empty name", R"json({"schemaVersion":5,"presets":[{"id":"x","name":"","framingOffset":{"right":0,"up":0},"orbit":{"yawDegrees":0,"pitchDegrees":0,"distance":100},"fovOffsetDegrees":0}]})json" },
+        { "name wrong type", R"json({"schemaVersion":5,"presets":[{"id":"x","name":7,"framingOffset":{"right":0,"up":0},"orbit":{"yawDegrees":0,"pitchDegrees":0,"distance":100},"fovOffsetDegrees":0}]})json" },
+        { "name too long", R"json({"schemaVersion":5,"presets":[{"id":"x","name":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","framingOffset":{"right":0,"up":0},"orbit":{"yawDegrees":0,"pitchDegrees":0,"distance":100},"fovOffsetDegrees":0}]})json" },
+        { "empty id", R"json({"schemaVersion":5,"presets":[{"id":"","name":"Name","framingOffset":{"right":0,"up":0},"orbit":{"yawDegrees":0,"pitchDegrees":0,"distance":100},"fovOffsetDegrees":0}]})json" },
+        { "missing framing member", R"json({"schemaVersion":5,"presets":[{"id":"x","name":"Name","framingOffset":{"right":0},"orbit":{"yawDegrees":0,"pitchDegrees":0,"distance":100},"fovOffsetDegrees":0}]})json" },
+        { "wrong framing type", R"json({"schemaVersion":5,"presets":[{"id":"x","name":"Name","framingOffset":{"right":"zero","up":0},"orbit":{"yawDegrees":0,"pitchDegrees":0,"distance":100},"fovOffsetDegrees":0}]})json" },
+        { "missing orbit", R"json({"schemaVersion":5,"presets":[{"id":"x","name":"Name","framingOffset":{"right":0,"up":0},"fovOffsetDegrees":0}]})json" },
+        { "yaw outside range", R"json({"schemaVersion":5,"presets":[{"id":"x","name":"Name","framingOffset":{"right":0,"up":0},"orbit":{"yawDegrees":181,"pitchDegrees":0,"distance":100},"fovOffsetDegrees":0}]})json" },
+        { "zero distance", R"json({"schemaVersion":5,"presets":[{"id":"x","name":"Name","framingOffset":{"right":0,"up":0},"orbit":{"yawDegrees":0,"pitchDegrees":0,"distance":0},"fovOffsetDegrees":0}]})json" },
+        { "missing FOV", R"json({"schemaVersion":5,"presets":[{"id":"x","name":"Name","framingOffset":{"right":0,"up":0},"orbit":{"yawDegrees":0,"pitchDegrees":0,"distance":100}}]})json" },
+        { "FOV outside range", R"json({"schemaVersion":5,"presets":[{"id":"x","name":"Name","framingOffset":{"right":0,"up":0},"orbit":{"yawDegrees":0,"pitchDegrees":0,"distance":100},"fovOffsetDegrees":161}]})json" },
+        { "FOV wrong type", R"json({"schemaVersion":5,"presets":[{"id":"x","name":"Name","framingOffset":{"right":0,"up":0},"orbit":{"yawDegrees":0,"pitchDegrees":0,"distance":100},"fovOffsetDegrees":"wide"}]})json" },
+        { "duplicate id", R"json({"schemaVersion":5,"presets":[{"id":"x","name":"Name","framingOffset":{"right":0,"up":0},"orbit":{"yawDegrees":0,"pitchDegrees":0,"distance":100},"fovOffsetDegrees":0},{"id":"x","name":"Name","framingOffset":{"right":0,"up":0},"orbit":{"yawDegrees":0,"pitchDegrees":0,"distance":100},"fovOffsetDegrees":0}]})json" },
+        { "non-finite numeric result", R"json({"schemaVersion":5,"presets":[{"id":"x","name":"Name","framingOffset":{"right":1e9999,"up":0},"orbit":{"yawDegrees":0,"pitchDegrees":0,"distance":100},"fovOffsetDegrees":0}]})json" },
     }};
     for (const auto& [description, document] : invalidDocuments) {
         const auto path = NextTemporaryPath();
@@ -752,7 +612,7 @@ int main()
     }
 
     const auto emptyPath = NextTemporaryPath();
-    passed &= Check(WriteText(emptyPath, R"json({ "schemaVersion": 1, "presets": [] })json"),
+    passed &= Check(WriteText(emptyPath, R"json({ "schemaVersion": 5, "presets": [] })json"),
         "empty preset fixture can be written");
     PresetRepository emptyRepository;
     const auto emptyLoad = emptyRepository.LoadFromFile(emptyPath);

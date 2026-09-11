@@ -1,6 +1,6 @@
 # 固定プリセット読み込みとカメラ制御の設計
 
-状態: **実装済み／schema version 4へ移行済み**
+状態: **schema version 5／表示名をIDから分離**
 
 ## 目的
 
@@ -35,16 +35,17 @@ Data/SKSE/Plugins/SexlabSceneCamera/presets.json
 
 構造化されたプリセット配列と将来のCRUDを扱いやすくするためJSONを使用する。既存の依存関係に`nlohmann-json`が含まれているため、新しいparser依存は追加しない。
 
-## schema version 4
+## schema version 5
 
 SKSE Menuに表示する設定と操作の仕様は[`preset-settings-spec.md`](preset-settings-spec.md)に分離する。以下は固定プリセット読込で使用する保存形式である。
 
 ```json
 {
-  "schemaVersion": 4,
+  "schemaVersion": 5,
   "presets": [
     {
       "id": "default",
+      "name": "Default",
       "framingOffset": {
         "right": 0.0,
         "up": 0.0
@@ -60,20 +61,16 @@ SKSE Menuに表示する設定と操作の仕様は[`preset-settings-spec.md`](p
 }
 ```
 
-- `schemaVersion`は必須とし、`1`、`2`、`3`、`4`を読み込める。書き込みは常に`4`とする。
+- `schemaVersion`は必須とし、`5`のみ読み書きする。旧形式の自動移行は提供しない。
 - `presets`は配列とし、全件を読み込む。通常表示では最初の使用可能候補を初期選択し、その後のA/Dと選択維持は可視性仕様に従う。
 - `id`は空でないUTF-8文字列とし、ファイル内で一意にする。後続CRUDでも同じIDを使用する。
+- `name`は必須の表示名で、空でない127バイト以内のUTF-8文字列とする。同名は許可する。改名しても`id`は変わらない。
 - `framingOffset.right`は現在のcamera right方向、`framingOffset.up`は現在のcamera up方向にframing centerを移動する量である。有限な数値とし、単位はSkyrim unitとする。
 - `orbit.yawDegrees`は注視中心を回る水平角で、`-180`から`180`度とする。アンカーforwardはプレイヤーActorの水平前方の逆を指すため、`0`度ではプレイヤー正面側、`-180`または`180`度では背面側にカメラを置く。
 - `orbit.pitchDegrees`は仰俯角で、`-90`から`90`度とする。正値ではカメラを注視中心より上へ置く。
 - `orbit.distance`は注視中心からカメラまでの距離で、有限かつ0より大きいSkyrim unitとする。
 - `fovOffsetDegrees`はユーザーの通常の三人称FOVへ加える相対値で、有限かつ`-160`から`160`度とする。実際のFOVは`10`から`170`度へ制限する。
-- schema version 1、2、3は`fovOffsetDegrees = 0`として読み込み、既存の見た目を維持する。
 - rollは保存しない。カメラは常にframing centerを見る。
-- schema version 1の`offset`は、framing offsetを0にした等価なyaw、pitch、distanceへ読み込み時に変換する。
-- schema version 2の`pivotOffset`はcamera right、camera up、view forwardへ分解する。rightとupはframing offsetへ、forwardはdistanceへ畳み込み、表現可能な構図では旧カメラ位置と視線を維持する。
-- version 2でアンカーがカメラ後方になる特殊な構図は、符号付きdistanceなしでは同じ視線を表現できない。この場合はカメラ位置を維持し、注視先をアンカーへ戻す。
-- 旧versionは次のCRUD保存でversion 4になる。
 - 未知のトップレベルまたはプリセット項目は、同じschema version内の後方互換な拡張として無視する。
 - 必須項目の欠落、型違い、非有限値、重複IDはファイル全体の読み込み失敗とする。部分的な採用は初版では行わない。
 
@@ -171,8 +168,7 @@ viewForward = normalize(framingCenter - cameraPosition)
 - 正常なschemaを全件読み込める。
 - ファイルなし、壊れたJSON、未知version、必須項目欠落、型違い、非有限値、重複IDを拒否する。
 - 未知の追加項目を無視できる。
-- schema version 1から3をFOV offset `0`として読み込める。
-- schema version 4のFOV offsetを読み書きでき、非有限値と範囲外を拒否する。
+- schema version 5の表示名とFOV offsetを読み書きでき、必須項目欠落、非有限値と範囲外を拒否する。
 
 ### ゲーム内確認
 

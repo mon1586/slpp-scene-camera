@@ -39,7 +39,7 @@
 
 ### active sceneからの編集
 
-- Player参加scene中は、現在適用中のプリセットIDと編集開始操作を常時確認できる。
+- Player参加scene中は、現在適用中のプリセット表示名と編集開始操作を常時確認できる。
 - 常設表示には編集開始用hotkeyの現在の割り当てを示し、覚えていなくても操作を確認できる。
 - 常設表示はmouse cursorを表示せず、mouse入力を捕捉しない。
 - 編集開始操作は現在表示している構図を別のプリセットへ切り替えず、そのプリセットの編集を開始する。
@@ -56,6 +56,8 @@
 
 - 新規プリセットは、現在のカメラ位置を基に作成できる。
 - 既存プリセットは、IDを維持したまま構図の数値を更新できる。
+- 保存済みプリセットの表示名を改名できる。Saveで確定し、ID、件数、順序、構図、選択を維持する。
+- 空の表示名や保存失敗では元の保存内容を維持し、改名案を編集欄に残す。取消では表示名も最後の保存状態へ戻す。同名の別プリセットは許可する。
 - 別IDとして残したい場合は「新規保存」として扱い、既存プリセットを上書きしない。
 - IDの重複、不正な数値、表現可能範囲外の値は確定できず、理由を画面に表示する。
 
@@ -86,17 +88,17 @@
 
 ## プリセットの意味
 
-SKSE Menuに表示する設定項目とユーザー操作の契約は[`preset-settings-spec.md`](preset-settings-spec.md)に分離する。保存形式は[`fixed-preset-camera-design.md`](fixed-preset-camera-design.md)のschema version 4を使用する。
+SKSE Menuに表示する設定項目とユーザー操作の契約は[`preset-settings-spec.md`](preset-settings-spec.md)に分離する。保存形式は[`fixed-preset-camera-design.md`](fixed-preset-camera-design.md)のschema version 5を使用する。
 
-- `id`はプリセットを識別する安定キーであり、保存データ内で一意とする。
-- 表示名を別フィールドとして追加せず、UIではIDを表示名として使う。
+- `id`はプリセットを識別する固定キーであり、保存データ内で一意とする。作成時に自動付与し、UIから変更できない。
+- `name`はIDとは独立した表示名とし、一覧、選択欄、Scene toolbar、削除確認に表示する。
 - `framingOffset.right`と`framingOffset.up`はcamera right/upで作る画面平面におけるframing centerの移動量を表す。
 - `orbit.yawDegrees`と`orbit.pitchDegrees`はアンカー周囲の視線方向、`orbit.distance`はframing centerとの距離を表す。
 - framing offsetを固定したままorbitを変えても、アンカーの画面内Right/Up成分は変化しない。
 - view forward方向のoffsetはdistanceと同じcamera poseになるため、独立した値として持たない。
 - framing offset、orbit、FOV offsetは有限値とする。yawは`-180..180`度、pitchは`-90..90`度、distanceは0より大きい値、FOV offsetは`-160..160`度に制限する。
 - FOV offsetはユーザーの通常FOVを基準とする相対値として保存する。rollは保存せず、プレビュー時も保存後の利用時もカメラはframing centerを見る。
-- schema version 1から3はFOV offset `0`として読み込み、次のCRUD操作でversion 4として保存する。
+- schema version 5のみを読み書きする。旧形式の自動移行は提供しない。
 
 現在のcamera位置`C`からプリセットを作る場合は、framing offsetを0に置き、`C - anchor`からyaw、pitch、distanceを得る。現在のcameraがアンカー以外を向いていても、取り込み後の向きはアンカーへ揃う。編集中のプリセットから複製する場合はframing offsetを含む全値をそのまま引き継ぐ。
 
@@ -107,7 +109,7 @@ SKSE Menuに表示する設定項目とユーザー操作の契約は[`preset-se
 | UI | 操作の受付、編集中値とエラーの表示、確認 | JSON入出力、cameraの直接操作 |
 | 編集セッション | 選択ID、保存済み値、編集中値、dirty状態、保存・取消判断 | game型、ファイル置換 |
 | プリセット管理 | 一覧、ID一意性、作成・更新・削除・再読込の整合性 | ImGui状態、camera所有権 |
-| 永続化 | schema version 1から3の移行読込、version 4の読書き、失敗時の旧データ保護 | scene状態、プレビュー状態 |
+| 永続化 | version 5の読書き、失敗時の旧データ保護 | scene状態、プレビュー状態 |
 | camera preview | anchor相対値からworld poseを作り、安全なcamera更新境界で反映 | 永続化、UI widget状態 |
 
 編集セッションは「保存済み値」と「編集中値」を分けて保持する。camera previewは編集中値を一時的な入力として扱い、プリセット管理の確定済み一覧を書き換えない。これにより、リアルタイム編集、取消、保存失敗からの再試行を同じ状態モデルで扱う。
@@ -158,12 +160,12 @@ editorを開けるのはcamera poseが適用済みの場合に限る。editor op
 初版editorが表示する要素:
 
 - プリセット一覧と選択状態
-- ID入力
+- 表示名入力と変更不可のID表示
 - Pan Right、Pan Up、orbit yaw、pitch、distance、FOV offsetの数値入力
 - 現在のcamera位置から値を取得する操作
 - 新規保存、上書き保存、取消、削除、再読込
 - dirty状態、プレビュー可否、入力または保存エラー
-- active sceneで現在適用中のプリセットIDと編集開始操作を示す常設表示
+- active sceneで現在適用中のプリセット表示名と編集開始操作を示す常設表示
 
 ## 完了条件
 
@@ -180,7 +182,8 @@ editorを開けるのはcamera poseが適用済みの場合に限る。editor op
 
 ## 検証状況
 
-- schema version 1から3の移行、version 4の読込、作成、更新、削除、再読込、重複ID、不正値、壊れた外部ファイルからの再読込をunit testで確認済み。
+- version 5の読込、作成、更新、削除、再読込、重複ID、不正値、壊れた外部ファイルからの再読込をunit testで確認済み。
+- 表示名の改名、ID・件数・順序の維持、同名の許可、再読込、保存失敗と再試行をunit testで確認済み。F8からの表示名編集は2026-09-12にユーザーよりゲーム内動作確認の報告あり。
 - 画面相対framing offset・orbitからworld poseへの変換と、framing offset 0でのworld位置からorbitへの逆変換をunit testで確認済み。
 - SKSE Menu Framework consumer headerを含むDLLのコンパイル、リンク、SKSE export、依存DLL検査に成功済み。
 - pause中の連続数値操作への追従、input競合、Close後の復帰、SmoothCam所有権喪失はゲーム内確認待ち。
@@ -190,5 +193,4 @@ editorを開けるのはcamera poseが適用済みの場合に限る。editor op
 - framing offsetとdistanceの実用的な上下限、数値入力のstep、細かい調整用のmodifier。
 - 選択中プリセットを次回起動でも記憶するか。
 - scene外で新規プリセットの数値入力だけを許可するか。
-- IDとは別の表示名とrenameを将来schemaへ追加するか。
 - gamepadでの細かな数値調整と、通常操作を抑制する範囲。

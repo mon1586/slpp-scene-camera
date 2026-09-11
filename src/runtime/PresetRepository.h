@@ -37,7 +37,8 @@ namespace ssc::runtime
         [[nodiscard]] PresetOperationResult Create(const CameraPreset& a_preset);
         [[nodiscard]] PresetOperationResult Update(
             std::string_view a_id,
-            const PresetTransform& a_transform);
+            const PresetTransform& a_transform,
+            std::string_view a_name);
         [[nodiscard]] PresetOperationResult Delete(std::string_view a_id);
         [[nodiscard]] std::shared_ptr<const CameraPresetSnapshot> Snapshot() const noexcept override;
 

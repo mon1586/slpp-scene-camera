@@ -472,15 +472,56 @@ int main()
     ssc::runtime::PresetRepository repository;
     passed &= Check(repository.LoadFromFile(presetPath).succeeded,
         "a missing preset file starts as an empty repository");
-    passed &= Check(repository.Create({ "only", defaults }).succeeded,
+    passed &= Check(repository.Create({ "only", defaults, "Only" }).succeeded,
         "a preset can be created from the empty state");
     passed &= Check(repository.Delete("only").succeeded && repository.Snapshot()->empty(),
         "deleting the final preset leaves a valid zero-preset state");
-    passed &= Check(repository.Create({ "recovered", combined }).succeeded,
+    passed &= Check(repository.Create({ "recovered", combined, "Recovered" }).succeeded,
         "New preset recovers after every preset was deleted");
     passed &= Check(repository.Snapshot()->size() == 1 &&
         repository.Snapshot()->front().id == "recovered",
         "the recovered preset becomes the saved selection source");
+    passed &= Check(repository.Create({ "second", defaults, "Recovered" }).succeeded,
+        "different IDs may share a display name");
+    const auto beforeRename = repository.Snapshot();
+    passed &= Check(repository.Update("recovered", combined, "New name").succeeded,
+        "a saved preset can be renamed without changing its ID");
+    const auto renamed = repository.Snapshot();
+    passed &= Check(renamed->size() == 2 &&
+        renamed->front().id == "recovered" && renamed->front().name == "New name" &&
+        renamed->back().id == "second" && renamed->back().name == "Recovered",
+        "rename preserves count, order and other presets");
+    passed &= CheckNear(renamed->front().transform.fovOffsetDegrees, combined.fovOffsetDegrees,
+        "rename preserves FOV");
+    passed &= CheckNear(renamed->front().transform.orbit.distance, combined.orbit.distance,
+        "rename preserves camera distance");
+    passed &= Check(beforeRename->front().name == "Recovered",
+        "previous immutable snapshots retain their saved name");
+    passed &= Check(!repository.Update("recovered", defaults, "").succeeded &&
+        repository.Snapshot() == renamed,
+        "empty name rejects both name and transform changes");
+    passed &= Check(!repository.Update("recovered", defaults, std::string(128, 'x')).succeeded &&
+        repository.Snapshot() == renamed,
+        "overlong name leaves the saved data unchanged");
+    passed &= Check(repository.Reload().succeeded &&
+        repository.Snapshot()->front().id == "recovered" &&
+        repository.Snapshot()->front().name == "New name",
+        "renamed display name and stable ID survive reload");
+    auto backupPath = presetPath;
+    backupPath += ".rename-test-backup";
+    std::filesystem::rename(presetPath, backupPath);
+    std::filesystem::create_directory(presetPath);
+    const auto beforeFailure = repository.Snapshot();
+    passed &= Check(!repository.Update("recovered", defaults, "Failed rename").succeeded &&
+        repository.Snapshot() == beforeFailure,
+        "persistence failure does not publish name or transform changes");
+    std::filesystem::remove(presetPath);
+    std::filesystem::rename(backupPath, presetPath);
+    passed &= Check(repository.Reload().succeeded &&
+        repository.Snapshot()->front().name == "New name",
+        "previous saved name remains readable after a failed save");
+    passed &= Check(repository.Update("recovered", combined, "Retry").succeeded,
+        "rename can be retried after a persistence failure");
     static_cast<void>(std::filesystem::remove(presetPath, ignored));
 
     const auto hotkeyPath = TemporaryPresetPath();

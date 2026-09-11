@@ -14,7 +14,6 @@
 #include <cmath>
 #include <fstream>
 #include <limits>
-#include <numbers>
 #include <unordered_set>
 
 namespace ssc::runtime
@@ -22,16 +21,6 @@ namespace ssc::runtime
     namespace
     {
         using Json = nlohmann::json;
-        constexpr double kDegreesToRadians = std::numbers::pi_v<double> / 180.0;
-        constexpr double kRadiansToDegrees = 180.0 / std::numbers::pi_v<double>;
-
-        struct LegacyOffset
-        {
-            float right;
-            float forward;
-            float up;
-        };
-
         [[nodiscard]] PresetOperationResult Failure(std::string a_error)
         {
             return { false, std::move(a_error) };
@@ -63,26 +52,6 @@ namespace ssc::runtime
                     std::string{ a_name } + "'");
             }
             return *iterator;
-        }
-
-        [[nodiscard]] LegacyOffset ParseLegacyOffset(
-            const Json& a_value,
-            std::string_view a_context)
-        {
-            if (!a_value.is_object()) {
-                throw std::runtime_error(std::string{ a_context } + " must be an object");
-            }
-            return {
-                ReadFiniteFloat(
-                    RequireMember(a_value, "right", a_context),
-                    std::string{ a_context } + ".right"),
-                ReadFiniteFloat(
-                    RequireMember(a_value, "forward", a_context),
-                    std::string{ a_context } + ".forward"),
-                ReadFiniteFloat(
-                    RequireMember(a_value, "up", a_context),
-                    std::string{ a_context } + ".up"),
-            };
         }
 
         [[nodiscard]] PresetFramingOffset ParseFramingOffset(
@@ -122,77 +91,6 @@ namespace ssc::runtime
             };
         }
 
-        [[nodiscard]] PresetTransform MigrateVersion1Offset(const LegacyOffset& a_offset)
-        {
-            const auto right = static_cast<double>(a_offset.right);
-            const auto forward = static_cast<double>(a_offset.forward);
-            const auto up = static_cast<double>(a_offset.up);
-            const auto distance = std::hypot(right, forward, up);
-            if (!std::isfinite(distance) || distance <= 1.0e-6) {
-                throw std::runtime_error("legacy offset must keep the camera away from the anchor");
-            }
-            const auto yaw = std::atan2(right, -forward) * kRadiansToDegrees;
-            const auto pitch = std::asin(std::clamp(up / distance, -1.0, 1.0)) *
-                               kRadiansToDegrees;
-            return {
-                {},
-                {
-                    static_cast<float>(yaw),
-                    static_cast<float>(pitch),
-                    static_cast<float>(distance),
-                },
-            };
-        }
-
-        [[nodiscard]] PresetTransform MigrateVersion2Transform(
-            const LegacyOffset& a_pivotOffset,
-            const PresetOrbit& a_orbit)
-        {
-            const auto yaw = static_cast<double>(a_orbit.yawDegrees) * kDegreesToRadians;
-            const auto pitch = static_cast<double>(a_orbit.pitchDegrees) * kDegreesToRadians;
-            const auto sineYaw = std::sin(yaw);
-            const auto cosineYaw = std::cos(yaw);
-            const auto sinePitch = std::sin(pitch);
-            const auto cosinePitch = std::cos(pitch);
-            const auto right = static_cast<double>(a_pivotOffset.right);
-            const auto forward = static_cast<double>(a_pivotOffset.forward);
-            const auto up = static_cast<double>(a_pivotOffset.up);
-
-            const auto panRight = right * cosineYaw + forward * sineYaw;
-            const auto panUp = -right * sineYaw * sinePitch +
-                               forward * cosineYaw * sinePitch +
-                               up * cosinePitch;
-            const auto pivotDepth = -right * sineYaw * cosinePitch +
-                                    forward * cosineYaw * cosinePitch -
-                                    up * sinePitch;
-            const auto distance = static_cast<double>(a_orbit.distance) - pivotDepth;
-            if (std::isfinite(distance) && distance > 1.0e-6) {
-                return {
-                    {
-                        static_cast<float>(panRight),
-                        static_cast<float>(panUp),
-                    },
-                    {
-                        a_orbit.yawDegrees,
-                        a_orbit.pitchDegrees,
-                        static_cast<float>(distance),
-                    },
-                };
-            }
-
-            // A version 2 target behind its camera cannot retain both position and
-            // viewing direction without a signed distance. Preserve its position
-            // and fall back to looking at the scene anchor.
-            const auto viewRight = -sineYaw * cosinePitch;
-            const auto viewForward = cosineYaw * cosinePitch;
-            const auto viewUp = -sinePitch;
-            return MigrateVersion1Offset({
-                static_cast<float>(right - viewRight * a_orbit.distance),
-                static_cast<float>(forward - viewForward * a_orbit.distance),
-                static_cast<float>(up - viewUp * a_orbit.distance),
-            });
-        }
-
         [[nodiscard]] CameraPresetSnapshot ParseSnapshot(std::istream& a_stream)
         {
             Json document;
@@ -206,8 +104,8 @@ namespace ssc::runtime
                 throw std::runtime_error("schemaVersion must be an integer");
             }
             const auto version = schemaVersion.get<std::int64_t>();
-            if (version != 1 && version != 2 && version != 3 && version != 4) {
-                throw std::runtime_error("schemaVersion must be integer 1, 2, 3, or 4");
+            if (version != 5) {
+                throw std::runtime_error("schemaVersion must be integer 5");
             }
 
             const auto& presets = RequireMember(document, "presets", "top level");
@@ -238,41 +136,18 @@ namespace ssc::runtime
                     throw std::runtime_error("duplicate preset id '" + id + "'");
                 }
 
-                PresetTransform transform;
-                if (version == 1) {
-                    transform = MigrateVersion1Offset(ParseLegacyOffset(
-                        RequireMember(preset, "offset", context),
-                        context + ".offset"));
-                } else if (version == 2) {
-                    const auto pivotOffset = ParseLegacyOffset(
-                        RequireMember(preset, "pivotOffset", context),
-                        context + ".pivotOffset");
-                    const auto orbit = ParseOrbit(
-                        RequireMember(preset, "orbit", context),
-                        context + ".orbit");
-                    const CameraPreset legacyPreset{
-                        id,
-                        { {}, orbit },
-                    };
-                    if (const auto error = ValidateCameraPreset(legacyPreset); !error.empty()) {
-                        throw std::runtime_error(context + "." + error);
-                    }
-                    transform = MigrateVersion2Transform(pivotOffset, orbit);
-                } else {
-                    transform.framingOffset = ParseFramingOffset(
-                        RequireMember(preset, "framingOffset", context),
-                        context + ".framingOffset");
-                    transform.orbit = ParseOrbit(
-                        RequireMember(preset, "orbit", context),
-                        context + ".orbit");
-                    if (version == 4) {
-                        transform.fovOffsetDegrees = ReadFiniteFloat(
-                            RequireMember(preset, "fovOffsetDegrees", context),
-                            context + ".fovOffsetDegrees");
-                    }
+                const auto& name = RequireMember(preset, "name", context);
+                if (!name.is_string()) {
+                    throw std::runtime_error(context + ".name must be a string");
                 }
-
-                CameraPreset parsedPreset{ std::move(id), transform };
+                const PresetTransform transform{
+                    ParseFramingOffset(RequireMember(preset, "framingOffset", context),
+                        context + ".framingOffset"),
+                    ParseOrbit(RequireMember(preset, "orbit", context), context + ".orbit"),
+                    ReadFiniteFloat(RequireMember(preset, "fovOffsetDegrees", context),
+                        context + ".fovOffsetDegrees"),
+                };
+                CameraPreset parsedPreset{ std::move(id), transform, name.get<std::string>() };
                 if (const auto error = ValidateCameraPreset(parsedPreset); !error.empty()) {
                     throw std::runtime_error(context + "." + error);
                 }
@@ -287,6 +162,7 @@ namespace ssc::runtime
             for (const auto& preset : a_snapshot) {
                 presets.push_back({
                     { "id", preset.id },
+                    { "name", preset.name },
                     { "framingOffset", {
                         { "right", preset.transform.framingOffset.right },
                         { "up", preset.transform.framingOffset.up },
@@ -300,7 +176,7 @@ namespace ssc::runtime
                 });
             }
             return Json{
-                { "schemaVersion", 4 },
+                { "schemaVersion", 5 },
                 { "presets", std::move(presets) },
             };
         }
@@ -407,6 +283,10 @@ namespace ssc::runtime
     {
         if (a_preset.id.empty()) {
             return "preset id must not be empty";
+        }
+        if (a_preset.name.empty() || a_preset.name.size() > 127 ||
+            a_preset.name.find('\0') != std::string::npos) {
+            return "preset name must contain 1 to 127 bytes without a null character";
         }
         return ValidatePresetTransform(a_preset.transform);
     }
@@ -541,10 +421,11 @@ namespace ssc::runtime
 
     PresetOperationResult PresetRepository::Update(
         std::string_view a_id,
-        const PresetTransform& a_transform)
+        const PresetTransform& a_transform,
+        std::string_view a_name)
     {
-        CameraPreset candidate{ std::string{ a_id }, a_transform };
-        if (const auto error = ValidateCameraPreset(candidate); !error.empty()) {
+        const CameraPreset a_preset{ std::string{ a_id }, a_transform, std::string{ a_name } };
+        if (const auto error = ValidateCameraPreset(a_preset); !error.empty()) {
             return Failure(error);
         }
 
@@ -557,7 +438,7 @@ namespace ssc::runtime
         if (iterator == next.end()) {
             return Failure("preset id was not found");
         }
-        iterator->transform = a_transform;
+        *iterator = a_preset;
         return PersistAndPublishLocked(std::move(next));
     }
 
