@@ -101,7 +101,8 @@ namespace ssc
             std::string a_message,
             std::optional<runtime::PresetTransform> a_transform = std::nullopt,
             bool a_previewPossible = false,
-            std::uint64_t a_appliedRevision = 0);
+            std::uint64_t a_appliedRevision = 0,
+            std::uint64_t a_visibilityRevision = 0);
         void Clear() noexcept;
 
         runtime::ISceneSource* sceneSource_{ nullptr };

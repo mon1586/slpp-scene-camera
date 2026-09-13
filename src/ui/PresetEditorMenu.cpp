@@ -940,13 +940,10 @@ namespace ssc::ui
                 if (feedback) {
                     ImGuiMCP::TextDisabled("Camera: %s", feedback->message.c_str());
                 }
-                if (feedback && feedback->appliedRevision == state.draftRevision &&
-                    feedback->visibilityEvaluation &&
-                    !feedback->visibilityEvaluation->candidates.empty()) {
-                    const auto& candidate = feedback->visibilityEvaluation->candidates.front();
-                    const auto summary = SummarizePresetForScene(
-                        feedback->visibilityEvaluation.get(), candidate.presetID);
-                    if (candidate.usable) {
+                const auto summary = SummarizeEditorPreview(
+                    feedback.get(), state.draftRevision, DraftID());
+                if (summary.status != PresetSceneStatus::kNotEvaluated) {
+                    if (summary.status == PresetSceneStatus::kUsable) {
                         ImGuiMCP::TextColored(
                             { 0.30F, 0.90F, 0.38F, 1.0F },
                             "Visibility: usable (center %s, corners %zu/4)",
@@ -958,8 +955,10 @@ namespace ssc::ui
                             "Visibility: blocked (center %s, corners %zu/4: %s)",
                             core::VisibilityPointStatusName(summary.centerStatus).data(),
                             summary.visibleCorners,
-                            core::CandidateFailureReasonName(candidate.failureReason).data());
+                            core::CandidateFailureReasonName(summary.failureReason).data());
                     }
+                } else {
+                    ImGuiMCP::TextDisabled("Visibility: awaiting current preview evaluation");
                 }
                 if (!state.message.empty()) {
                     ImGuiMCP::TextWrapped("%s", state.message.c_str());

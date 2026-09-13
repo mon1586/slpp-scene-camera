@@ -1,4 +1,5 @@
 #include "support/SceneCameraDoubles.h"
+#include "ui/PresetEditorPolicy.h"
 
 using namespace ssc::tests;
 bool RunTDMTargetLockControlTests();
@@ -1412,6 +1413,52 @@ int main()
             "metadata: movement resumes with generic candidate after timeout");
     }
 
+    {
+        TestSceneSource source;
+        TestPresetProvider presets({
+            { "blocked-first", editedBlockedTransform },
+            { "visible-second", alternateTransform },
+        });
+        ssc::runtime::PresetPreviewService preview;
+        TestCameraControl output;
+        TestVisibilityProbe probe;
+        TestDebugVisualization debug;
+        ssc::SceneCamera scene;
+        scene.Configure(source, presets, preview, output, probe, debug);
+        scene.HandleSceneEvent({ ssc::runtime::SceneEventType::kAnimationStart, sceneKey, participants });
+        scene.Update(0.016F);
+        passed &= Check(preview.Feedback()->visibilityEvaluation->selectedPresetID == "visible-second",
+            "editor visibility: dashboard selects the visible non-first preset");
+        preview.BeginPreviewSession();
+        auto revision = preview.SetPreview(alternateTransform, "visible-second");
+        scene.HandleSceneEvent({ ssc::runtime::SceneEventType::kStageStart, sceneKey, participants });
+        scene.Update(0.0F);
+        passed &= Check(ssc::ui::SummarizeEditorPreview(preview.Feedback().get(), revision,
+            "visible-second").status == ssc::ui::PresetSceneStatus::kUsable,
+            "editor visibility: F8 overlapping scene reevaluation shows the unchanged current preset");
+        revision = preview.SetPreview(editedBlockedTransform, "visible-second");
+        passed &= Check(ssc::ui::SummarizeEditorPreview(preview.Feedback().get(), revision,
+            "visible-second").status == ssc::ui::PresetSceneStatus::kNotEvaluated,
+            "editor visibility: a changed draft never displays the previous result");
+        scene.HandleSceneEvent({ ssc::runtime::SceneEventType::kStageStart, sceneKey, participants });
+        scene.Update(0.0F);
+        passed &= Check(ssc::ui::SummarizeEditorPreview(preview.Feedback().get(), revision,
+            "visible-second").status == ssc::ui::PresetSceneStatus::kBlocked,
+            "editor visibility: reevaluation uses the blocked draft instead of its visible saved pose");
+        passed &= Check(ssc::ui::SummarizeEditorPreview(preview.Feedback().get(), revision,
+            "blocked-first").status == ssc::ui::PresetSceneStatus::kNotEvaluated,
+            "editor visibility: another preset result cannot stand in for the draft");
+        revision = preview.SetPreview(alternateTransform, "visible-second");
+        scene.Update(0.0F);
+        passed &= Check(ssc::ui::SummarizeEditorPreview(preview.Feedback().get(), revision,
+            "visible-second").status == ssc::ui::PresetSceneStatus::kUsable,
+            "editor visibility: editing back to a visible pose restores the green status");
+        auto stale = *preview.Feedback();
+        stale.visibilityRevision = 0;
+        passed &= Check(ssc::ui::SummarizeEditorPreview(&stale, revision,
+            "visible-second").status == ssc::ui::PresetSceneStatus::kNotEvaluated,
+            "editor visibility: pose application alone does not certify the visibility result");
+    }
     passed &= RunAnimationFilterIntegrationTests();
     return passed ? 0 : 1;
 }

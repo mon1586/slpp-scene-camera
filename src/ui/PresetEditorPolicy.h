@@ -81,6 +81,21 @@ namespace ssc::ui
         };
     }
 
+    [[nodiscard]] inline PresetSceneSummary SummarizeEditorPreview(
+        const runtime::PresetPreviewFeedback* a_feedback,
+        std::uint64_t a_draftRevision,
+        std::string_view a_presetID) noexcept
+    {
+        if (!a_feedback || !a_feedback->previewApplied || a_draftRevision == 0 ||
+            a_feedback->appliedRevision != a_draftRevision ||
+            a_feedback->visibilityRevision != a_draftRevision ||
+            !a_feedback->visibilityEvaluation ||
+            a_feedback->visibilityEvaluation->candidates.size() != 1) {
+            return {};
+        }
+        return SummarizePresetForScene(a_feedback->visibilityEvaluation.get(), a_presetID);
+    }
+
     [[nodiscard]] inline std::size_t CountUsablePresets(
         const core::VisibilityEvaluationSnapshot* a_evaluation) noexcept
     {

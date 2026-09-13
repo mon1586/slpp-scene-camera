@@ -501,7 +501,7 @@ namespace ssc
             anchorInputUnavailable_ = false;
             if (!debugMode && !debugResumePending_.load(std::memory_order_acquire)) {
                 bool requestedPoseApplied = false;
-                if (!ApplyRequestedTransform(previewRequest, false, requestedPoseApplied)) {
+                if (!ApplyRequestedTransform(previewRequest, previewSessionActive, requestedPoseApplied)) {
                     return;
                 }
                 poseAppliedThisUpdate = requestedPoseApplied;
@@ -712,13 +712,14 @@ namespace ssc
         }
         a_poseApplied = true;
         if (a_liveEdit && a_request && a_request->transform) {
-            static_cast<void>(EvaluatePreviewVisibility(*a_request));
+            const auto evaluated = EvaluatePreviewVisibility(*a_request);
             PublishPreviewFeedback(
                 true,
                 "Live preview",
                 *transform,
                 true,
-                revision);
+                revision,
+                evaluated ? revision : 0);
         }
         appliedPreviewRequest_ = a_request;
         return true;
@@ -907,6 +908,7 @@ namespace ssc
             const auto previous = previewService_->Feedback();
             auto feedback = previous ? *previous : runtime::PresetPreviewFeedback{};
             feedback.visibilityEvaluation = visibilityEvaluation_;
+            feedback.visibilityRevision = 0;
             previewService_->PublishFeedback(std::move(feedback));
         }
         if (debugModeObserved_ &&
@@ -1137,7 +1139,8 @@ namespace ssc
         std::string a_message,
         std::optional<runtime::PresetTransform> a_transform,
         bool a_previewPossible,
-        std::uint64_t a_appliedRevision)
+        std::uint64_t a_appliedRevision,
+        std::uint64_t a_visibilityRevision)
     {
         if (!previewService_) {
             return;
@@ -1150,6 +1153,7 @@ namespace ssc
             std::move(a_transform),
             std::move(a_message),
             visibilityEvaluation_,
+            a_visibilityRevision,
         });
     }
 

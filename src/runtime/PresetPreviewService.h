@@ -26,6 +26,7 @@ namespace ssc::runtime
         std::optional<PresetTransform> currentTransform;
         std::string message{ "No active player scene" };
         std::shared_ptr<const core::VisibilityEvaluationSnapshot> visibilityEvaluation;
+        std::uint64_t visibilityRevision{ 0 };
     };
 
     class PresetPreviewService
