@@ -37,6 +37,8 @@ namespace ssc::runtime
     {
         bool movementEnabled{ false };
         bool paused{ false };
+        bool freeCamera{ false };
+        bool sceneCameraSupported{ true };
     };
 
     struct VisibilityTarget

@@ -164,7 +164,14 @@ namespace ssc::runtime
         if (!controls || !player || !player->Get3D() || !ui) {
             return std::nullopt;
         }
-        return SceneControlState{ controls->IsMovementControlsEnabled(), ui->GameIsPaused() };
+        const auto* camera = RE::PlayerCamera::GetSingleton();
+        if (!camera || !camera->currentState) {
+            return std::nullopt;
+        }
+        const auto state = camera->currentState->id;
+        return SceneControlState{ controls->IsMovementControlsEnabled(), ui->GameIsPaused(),
+            state == RE::CameraState::kFree,
+            state == RE::CameraState::kThirdPerson || state == RE::CameraState::kAnimated };
     }
 
     SceneParticipantSnapshot SexLabPSceneSource::CollectParticipants(

@@ -112,10 +112,8 @@ namespace ssc
         Clock::time_point targetUnlockDeadline_{};
         SceneSession session_;
         bool movementSuspended_{ false };
-        std::optional<Clock::time_point> movementResumeReadyAt_;
         runtime::SceneParticipantSnapshot participants_;
         std::chrono::steady_clock::time_point activeSince_{};
-        std::chrono::steady_clock::time_point sceneEvaluationReadyAt_{};
         std::atomic_bool resetRequested_{ false };
         std::atomic_int presetStepRequested_{ 0 };
         std::atomic_bool presetSwitchEnabled_{ false };

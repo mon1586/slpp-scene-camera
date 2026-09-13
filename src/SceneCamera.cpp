@@ -7,7 +7,6 @@ namespace ssc
     namespace
     {
         constexpr auto kMaximumSceneDuration = std::chrono::minutes{ 30 };
-        constexpr auto kAnimationChangeDelay = std::chrono::seconds{ 1 };
         constexpr auto kTargetUnlockTimeout = std::chrono::seconds{ 2 };
         constexpr auto kDebugResumeInterval = std::chrono::milliseconds{ 500 };
         constexpr auto kDebugResumeTimeout = std::chrono::seconds{ 2 };
@@ -169,7 +168,6 @@ namespace ssc
             session_.Clear();
             participants_ = {};
             sceneEvaluationPending_.store(false, std::memory_order_release);
-            sceneEvaluationReadyAt_ = {};
             Clear();
             return;
         }
@@ -178,9 +176,8 @@ namespace ssc
         if (!session_.Activate(a_event.key)) {
             return;
         }
-        sceneEvaluationReadyAt_ = now_();
         sceneEvaluationPending_.store(true, std::memory_order_release);
-        activeSince_ = sceneEvaluationReadyAt_;
+        activeSince_ = now_();
         // Event delivery runs at main update, but initial target unlock remains
         // paired with camera startup on the following camera-state update.
         targetUnlockQueued_.store(targetLockControl_ != nullptr, std::memory_order_release);
@@ -203,15 +200,10 @@ namespace ssc
                 a_event.key.sourceID, a_event.key.instanceID);
             return;
         }
-        sceneEvaluationReadyAt_ = now_() + kAnimationChangeDelay;
-        if (movementSuspended_) {
-            movementResumeReadyAt_ = sceneEvaluationReadyAt_;
-        }
         sceneEvaluationPending_.store(true, std::memory_order_release);
         presetSwitchEnabled_.store(false, std::memory_order_release);
         presetStepRequested_.store(0, std::memory_order_release);
-        logger::info("Scene visibility reevaluation scheduled in {} ms for {:08X}/{}",
-            std::chrono::duration_cast<std::chrono::milliseconds>(kAnimationChangeDelay).count(),
+        logger::info("Scene visibility reevaluation queued for {:08X}/{}",
             a_event.key.sourceID,
             a_event.key.instanceID);
     }
@@ -222,12 +214,9 @@ namespace ssc
             !session_.IsActive() || !session_.Matches(a_event.key)) {
             return;
         }
-        logger::info("ActorsRelocated {:08X}/{}; waiting for relocated pose",
+        logger::info("ActorsRelocated {:08X}/{}; reevaluation queued",
             a_event.key.sourceID, a_event.key.instanceID);
-        if (movementSuspended_) {
-            movementResumeReadyAt_ = now_() + kAnimationChangeDelay;
-        } else {
-            sceneEvaluationReadyAt_ = now_() + kAnimationChangeDelay;
+        if (!movementSuspended_) {
             sceneEvaluationPending_.store(true, std::memory_order_release);
             presetSwitchEnabled_.store(false, std::memory_order_release);
             presetStepRequested_.store(0, std::memory_order_release);
@@ -237,10 +226,8 @@ namespace ssc
     void SceneCamera::SuspendForMovement()
     {
         movementSuspended_ = true;
-        movementResumeReadyAt_.reset();
         targetUnlockQueued_.store(false, std::memory_order_release);
         sceneEvaluationPending_.store(false, std::memory_order_release);
-        sceneEvaluationReadyAt_ = {};
         presetSwitchEnabled_.store(false, std::memory_order_release);
         presetStepRequested_.store(0, std::memory_order_release);
         debugResumePending_.store(false, std::memory_order_release);
@@ -252,8 +239,8 @@ namespace ssc
             debugVisualization_->HideAnchor();
             debugVisualization_->HideVisibility();
         }
-        PublishPreviewFeedback(false, "Player movement enabled; scene camera suspended");
-        logger::info("Scene camera suspended: player movement enabled");
+        PublishPreviewFeedback(false, "Player movement or free camera active; scene camera suspended");
+        logger::info("Scene camera suspended: player movement or free camera active");
     }
 
     void SceneCamera::ProcessMainUpdate()
@@ -262,7 +249,7 @@ namespace ssc
             return;
         }
         const auto controls = sceneSource_ ? sceneSource_->CollectControlState() : std::nullopt;
-        if (controls && controls->movementEnabled && !movementSuspended_) {
+        if (controls && (controls->movementEnabled || controls->freeCamera) && !movementSuspended_) {
             SuspendForMovement();
         }
         if (!movementSuspended_) {
@@ -278,23 +265,14 @@ namespace ssc
             previewService_->InvalidatePreviewSession();
         }
         const auto targetReturned = CancelTargetUnlock();
-        const auto cameraReturned = ReleaseCamera("player movement enabled"sv, false);
-        if (!controls || controls->movementEnabled || controls->paused ||
+        const auto cameraReturned = ReleaseCamera("player movement or free camera active"sv, false);
+        if (!controls || controls->movementEnabled || controls->freeCamera ||
+            !controls->sceneCameraSupported || controls->paused ||
             !targetReturned || !cameraReturned) {
-            movementResumeReadyAt_.reset();
-            return;
-        }
-        if (!movementResumeReadyAt_) {
-            movementResumeReadyAt_ = now + kAnimationChangeDelay;
-            logger::info("Scene movement relocked; resume settling for 1000 ms");
-            return;
-        }
-        if (now < *movementResumeReadyAt_) {
             return;
         }
 
         movementSuspended_ = false;
-        movementResumeReadyAt_.reset();
         anchor_.reset();
         activePresetID_.reset();
         initialPresetSelectionDone_ = false;
@@ -302,7 +280,6 @@ namespace ssc
         anchorLOSTimeSeconds_ = 0.0F;
         anchorLOSMetrics_ = {};
         appliedPreviewRequest_.reset();
-        sceneEvaluationReadyAt_ = now;
         sceneEvaluationPending_.store(true, std::memory_order_release);
         logger::info("Scene camera resume queued: movement relocked; fresh anchor required");
     }
@@ -367,7 +344,6 @@ namespace ssc
             anchorLOSMetrics_ = {};
             logger::info("Scene camera debug mode {}", debugMode ? "enabled" : "disabled");
             if (session_.IsActive()) {
-                sceneEvaluationReadyAt_ = now_();
                 sceneEvaluationPending_.store(true, std::memory_order_release);
             }
             if (debugMode && !ReleaseCamera("debug mode enabled"sv, false)) {
@@ -410,7 +386,6 @@ namespace ssc
             debugResumePending_.store(false, std::memory_order_release);
             if (!previewSessionActive) {
                 sceneEvaluationPending_.store(false, std::memory_order_release);
-                sceneEvaluationReadyAt_ = {};
                 PublishPreviewFeedback(false,
                     "Could not resume camera; toggle Debug mode on/off to retry");
             }
@@ -423,7 +398,7 @@ namespace ssc
         const auto sceneEvaluationPending =
             sceneEvaluationPending_.load(std::memory_order_acquire);
         const auto sceneEvaluationReady =
-            sceneEvaluationPending && now >= sceneEvaluationReadyAt_;
+            sceneEvaluationPending;
         const auto shouldTrackAnchor =
             session_.IsActive() && (anchor_.has_value() || sceneEvaluationReady);
         bool anchorRefreshed = false;
@@ -483,7 +458,6 @@ namespace ssc
         }
         if (sceneEvaluationReady && anchorRefreshed) {
             sceneEvaluationPending_.store(false, std::memory_order_release);
-            sceneEvaluationReadyAt_ = {};
             if (!EvaluateVisibility(previewEnded ? previewRequest->presetID : "")) {
                 return;
             }
@@ -1207,11 +1181,9 @@ namespace ssc
     void SceneCamera::StopSceneWork() noexcept
     {
         movementSuspended_ = false;
-        movementResumeReadyAt_.reset();
         targetUnlockQueued_.store(false, std::memory_order_release);
         session_.BeginRestore();
         sceneEvaluationPending_.store(false, std::memory_order_release);
-        sceneEvaluationReadyAt_ = {};
         presetSwitchEnabled_.store(false, std::memory_order_release);
         presetStepRequested_.store(0, std::memory_order_release);
         debugResumePending_.store(false, std::memory_order_release);
@@ -1249,7 +1221,6 @@ namespace ssc
         cameraPoseActive_.store(false, std::memory_order_release);
         presetSwitchEnabled_.store(false, std::memory_order_release);
         presetStepRequested_.store(0, std::memory_order_release);
-        sceneEvaluationReadyAt_ = {};
         activeSince_ = {};
         debugResumePending_.store(false, std::memory_order_release);
         debugResumeAttemptsLeft_ = 0;

@@ -85,7 +85,8 @@ namespace ssc::runtime
 
                 const auto* newState = a_event->newState;
                 if (!newState || (newState->id != RE::CameraState::kThirdPerson &&
-                                     newState->id != RE::CameraState::kAnimated)) {
+                                     newState->id != RE::CameraState::kAnimated &&
+                                     newState->id != RE::CameraState::kFree)) {
                     CameraHook::QueueReset("camera changed to an unsupported state");
                 }
                 return RE::BSEventNotifyControl::kContinue;
@@ -532,6 +533,13 @@ namespace ssc::runtime
         try {
             if (!IsUpdateHookHealthy()) {
                 client->EmergencyReset();
+                return;
+            }
+            // The original update may already be transitioning to Free. Do not
+            // apply a scene pose on that outgoing supported-state update.
+            const auto* camera = RE::PlayerCamera::GetSingleton();
+            if ((a_nextState && a_nextState->id == RE::CameraState::kFree) ||
+                (camera && camera->currentState && camera->currentState->id == RE::CameraState::kFree)) {
                 return;
             }
             auto* ui = RE::UI::GetSingleton();
