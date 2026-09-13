@@ -1,3 +1,4 @@
+#include "runtime/AnimationMetadataReader.h"
 #include "SceneCamera.h"
 #include "runtime/CameraHook.h"
 #include "runtime/CameraInput.h"
@@ -33,16 +34,17 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
     try {
         ssc::runtime::PluginRuntime::InitializeLog();
-        logger::info("Sexlab Scene Camera POC 0.1.0 loading");
+        logger::info("Sexlab Scene Camera 0.1.0 loading; event-driven animation filters enabled");
         logger::info("MoveScene control v1 enabled: yield on movement unlock; resume after relock settles");
 
         SKSE::Init(a_skse, false);
         if (REL::Module::IsVR()) {
-            logger::critical("Skyrim VR is not supported by this POC");
+            logger::critical("Skyrim VR is not supported");
             return false;
         }
 
         auto* sceneCamera = ssc::SceneCamera::GetSingleton();
+        ssc::runtime::ConfigureAnimationMetadataReader(sceneCamera->AnimationUpdates());
         sceneCamera->Configure(
             *ssc::runtime::SexLabPSceneSource::GetSingleton(),
             *ssc::runtime::PresetRepository::GetSingleton(),

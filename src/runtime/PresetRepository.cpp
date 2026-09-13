@@ -1,4 +1,6 @@
 #include "runtime/PresetRepository.h"
+#include "runtime/PresetFilterEvaluator.h"
+#include "runtime/SelectionBoundary.h"
 
 #include <nlohmann/json.hpp>
 
@@ -147,7 +149,9 @@ namespace ssc::runtime
                     ReadFiniteFloat(RequireMember(preset, "fovOffsetDegrees", context),
                         context + ".fovOffsetDegrees"),
                 };
-                CameraPreset parsedPreset{ std::move(id), transform, name.get<std::string>() };
+                CameraPreset parsedPreset{ std::move(id), transform, name.get<std::string>(),
+                    preset.value("animationNameRegex", std::string{}),
+                    preset.value("animationTagRegex", std::string{}) };
                 if (const auto error = ValidateCameraPreset(parsedPreset); !error.empty()) {
                     throw std::runtime_error(context + "." + error);
                 }
@@ -163,6 +167,8 @@ namespace ssc::runtime
                 presets.push_back({
                     { "id", preset.id },
                     { "name", preset.name },
+                    { "animationNameRegex", preset.animationNameRegex },
+                    { "animationTagRegex", preset.animationTagRegex },
                     { "framingOffset", {
                         { "right", preset.transform.framingOffset.right },
                         { "up", preset.transform.framingOffset.up },
@@ -288,6 +294,8 @@ namespace ssc::runtime
             a_preset.name.find('\0') != std::string::npos) {
             return "preset name must contain 1 to 127 bytes without a null character";
         }
+        const PresetFilterEvaluator filter{ a_preset.animationNameRegex, a_preset.animationTagRegex };
+        if (!filter.Error().empty()) { return filter.Error(); }
         return ValidatePresetTransform(a_preset.transform);
     }
 
@@ -312,9 +320,7 @@ namespace ssc::runtime
                 persistedSnapshot_.clear();
                 loaded_ = true;
                 backupBeforeNextWrite_ = false;
-                snapshot_.store(
-                    std::make_shared<const CameraPresetSnapshot>(),
-                    std::memory_order_release);
+                Publish(std::make_shared<const CameraPresetSnapshot>());
                 return { true, 0, {} };
             }
             std::ifstream stream{ a_path, std::ios::binary };
@@ -329,9 +335,7 @@ namespace ssc::runtime
             persistedSnapshot_ = std::move(parsed);
             loaded_ = true;
             backupBeforeNextWrite_ = false;
-            snapshot_.store(
-                std::make_shared<const CameraPresetSnapshot>(persistedSnapshot_),
-                std::memory_order_release);
+            Publish(std::make_shared<const CameraPresetSnapshot>(persistedSnapshot_));
             return { true, count, {} };
         } catch (const std::exception& exception) {
             std::scoped_lock lock{ mutex_ };
@@ -340,9 +344,7 @@ namespace ssc::runtime
             loaded_ = false;
             std::error_code ignored;
             backupBeforeNextWrite_ = std::filesystem::exists(a_path, ignored);
-            snapshot_.store(
-                std::make_shared<const CameraPresetSnapshot>(),
-                std::memory_order_release);
+            Publish(std::make_shared<const CameraPresetSnapshot>());
             return { false, 0, exception.what() };
         } catch (...) {
             std::scoped_lock lock{ mutex_ };
@@ -351,9 +353,7 @@ namespace ssc::runtime
             loaded_ = false;
             std::error_code ignored;
             backupBeforeNextWrite_ = std::filesystem::exists(a_path, ignored);
-            snapshot_.store(
-                std::make_shared<const CameraPresetSnapshot>(),
-                std::memory_order_release);
+            Publish(std::make_shared<const CameraPresetSnapshot>());
             return { false, 0, "unknown loader failure" };
         }
     }
@@ -381,9 +381,7 @@ namespace ssc::runtime
             persistedSnapshot_ = std::move(parsed);
             loaded_ = true;
             backupBeforeNextWrite_ = false;
-            snapshot_.store(
-                std::make_shared<const CameraPresetSnapshot>(persistedSnapshot_),
-                std::memory_order_release);
+            Publish(std::make_shared<const CameraPresetSnapshot>(persistedSnapshot_));
             return { true, count, {} };
         } catch (const std::exception& exception) {
             std::scoped_lock lock{ mutex_ };
@@ -422,9 +420,10 @@ namespace ssc::runtime
     PresetOperationResult PresetRepository::Update(
         std::string_view a_id,
         const PresetTransform& a_transform,
-        std::string_view a_name)
+        std::string_view a_name, std::string_view a_nameRegex, std::string_view a_tagRegex)
     {
-        const CameraPreset a_preset{ std::string{ a_id }, a_transform, std::string{ a_name } };
+        const CameraPreset a_preset{ std::string{ a_id }, a_transform, std::string{ a_name },
+            std::string{ a_nameRegex }, std::string{ a_tagRegex } };
         if (const auto error = ValidateCameraPreset(a_preset); !error.empty()) {
             return Failure(error);
         }
@@ -468,15 +467,19 @@ namespace ssc::runtime
             ReplaceFileTransactionally(storagePath_, a_snapshot);
             persistedSnapshot_ = std::move(a_snapshot);
             loaded_ = true;
-            snapshot_.store(
-                std::make_shared<const CameraPresetSnapshot>(persistedSnapshot_),
-                std::memory_order_release);
+            Publish(std::make_shared<const CameraPresetSnapshot>(persistedSnapshot_));
             return { true, {} };
         } catch (const std::exception& exception) {
             return Failure(exception.what());
         } catch (...) {
             return Failure("unknown preset persistence failure");
         }
+    }
+
+    void PresetRepository::Publish(std::shared_ptr<const CameraPresetSnapshot> a_snapshot)
+    {
+        std::scoped_lock publication{ SelectionBoundary() };
+        snapshot_.store(std::move(a_snapshot), std::memory_order_release);
     }
 
     std::shared_ptr<const CameraPresetSnapshot> PresetRepository::Snapshot() const noexcept

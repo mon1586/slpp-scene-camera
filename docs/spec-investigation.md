@@ -1,5 +1,92 @@
 # 仕様の考慮漏れ・追加調査記録
 
+## 2026-09-14 タグregexを一覧全体への照合へ変更（03:13）
+
+ユーザーのsittingあり・standingなしという条件に対応するため、個別タグのany-matchを廃止し、取得順のタグを半角スペース1個で連結した文字列へregex_searchする仕様へ変更した。名前欄とのAND、空欄の制限なし、情報不明の除外は維持。既存のタグregexの`^`と`$`は一覧全体を指すようになるため、単語タグの存在確認には`\bsitting\b`などを使う。手動回帰テストも更新した。
+
+build.cmd成功、4スイート全通過。肯定・否定先読みの組み合わせ、除外タグの前後順、空タグ一覧と情報不明の違いを追加確認した。実機での新しい照合結果は未確認。MO2側DLL/PDBを更新しdistとのhash一致を確認。DLL SHA256: `91E2E0E25C7BA1173EE93403FFF7B2E13673DF1F282219D77BDE4937FED99219`。旧ファイルは`build/tag-list-filter-backup-20260914-031307`へ退避した。
+
+## 2026-09-14 アニメーションフィルタ本実装とPoC撤去（02:58）
+
+承認されたレース対策に沿って、通知受信時の番号更新、取得待ち、最新要求の確定をAnimationUpdateCoordinatorへ実装した。AnimationChangeは取得可能の根拠にせず、AnimationStart/StageStartでIDを取得する。名前・タグと候補を同じ更新として公開し、公開・通常選択・プリセット保存の公開をSelectionBoundaryで順序付ける。VM呼び出し・LOS・regex・ディスク書き込みはこの排他区間に含めない。受信番号は通常の受信ログより先に更新する。
+
+エディタに名前・タグのregex欄、入力エラー、現在情報表示を追加。保存形式はversion 5の任意項目として拡張し、初期選択・通常A/Dへ反映した。取得不能・最後の対象通知から5秒経過では情報不明として条件なし候補だけを使用する。取得PoCのCapture/Probe、専用計測テスト、MoveSceneの観測専用ログと定期観測を削除し、既存の調査記録は保持した。
+
+build.cmd成功、4テストスイート全通過。新規テストは旧応答・逆順応答・受信済み未配送通知・部分応答・期限切れ・同一key再開始・取得例外・regex照合と保存を確認する。SceneCamera結合テストでは実際のLOS評価途中に通知または削除を差し込み、古い候補の公開を防ぐこと、取得中の移動が保留を解除しないことも確認した。実機のUI/キー変更から新IDを取得できるかは未確認であり、自動テストから保証しない。
+
+ゲーム停止を確認し、MO2側DLL/PDBを更新してdistとのSHA256一致を確認した。DLL: `E30C8B48A849B667D9702848B7E963FF887E1E57C66FE2CC025B8E06207D78FF`。PDB: `3E5D7A80F801553558227F6C23E198A199EA643E16DB84E61A2C12FF52CF3F28`。旧DLL/PDBは`build/animation-filter-before-install-20260914-025819`へ退避済み。ユーザーのプリセットファイルは上書きしていない。
+
+実機受入では名前regexに現在名の一部、タグregexに現在のタグを設定し、UI変更・キー変更・通常ステージ進行・移動・連続変更で現在情報とA/D候補を確認する。`Animation filter committed`ログは確定したID・名前・タグ数を記録する。旧PoCの反復計測ログは出力しない。
+
+## 2026-09-14 UI変更のログでイベント網羅性の不足を確認（02:21）
+
+ユーザーがUIから変更したと報告した実行のSSC/P+ログを `build/animation-metadata-v3-ui-20260914-022142` に保存した。SSC SHA256: `08E939E0E74C710FED86195530C8E4C0D90411935DA0E17065E2BBC6BA7C1BE6`。P+ SHA256: `45487B77792D13D7A1E5F2199A8EFEAA88DB2286C9E3F4225153C6A8B381E9B3`。
+
+開始時のIDは `21zryfmm`、表示名は `Billyy Handjob 1 Kneeling Side`。Starting/Startの2報告だけで、AnimationChange callbackは0件、接尾辞なしStageStartは7件だった。SSCのerror/criticalは0件。
+
+P+ログでは02:21:34.782に `B_HJ1_A1_S1`、02:21:37.533に `B_AKneelFF_A1_S1`、02:21:40.553に `B_Beh2_A1_S1` が実際に受理されている。後二つは同じアニメーションの単なるS2/S3進行ではなく、異なるアニメーションのS1である。その直前のSSCログにはそれぞれ02:21:37.522、02:21:40.543のStageStartがある一方、AnimationChangeがない。現行PoCはStageStartを取得の契機にしないため、開始後の新しいIDは記録していない。
+
+結論: 前回の変更キーの結果だけではUI経路まで保証できず、今回その不足を実ログで確認した。開始・AnimationChange・移動完了だけで現在情報を更新する仕様では、UI変更後も古いmetadataが残る。次の候補はStageStartでもIDを取得し、保持IDとの差がある場合にmetadataを更新するイベント駆動方式。StageStartはステージ進行にも届くので、アニメーション変更と同一視しない。
+
+配置済み `sslThreadModel.psc:1249` はStageStart通知後に `AdvanceScene` を呼ぶ。このためStageStartという名前だけで同期完了とは解釈せず、同イベントを契機としたID取得のタイミング確認が必要。今回のUI操作がPSCの検索fallbackかnative UI側の別経路かはログだけでは確定していない。P+ログの `Missing interface, scaling disabled` は別件として保全した。実装・ビルド・再配置は行わず、結果記録のみ。
+
+## 2026-09-14 タイミングPoC v3のゲーム内ログ（02:15〜02:16）
+
+`build/animation-metadata-v3-20260914-021612` にSSCログ、P+の `SexLabUtil.log`、抽出JSON、集計CSVを保全した。SSCログSHA256: `13296BD9ACC6B172195C183BABDDA7185818F22056BBFD4FA045AA10DF212F1A`。P+ログSHA256: `7C7FCA514C71741881E0EB046E762ED04E1C3BE722142CFCBD8A925BB9E0160B`。
+
+- Starting 2件、Start 2件、Change 17件、ActorsRelocated 2件の計23通知を観測し、すべてに最初のID要求と成功応答が残った。ID取得は計122回、9種類のIDで全回ok。各通知内で最初と後続のIDが異なるケースは0件。
+- 初回要求はSSCの通知投入から3.3893〜3.8677ms後。実行済みID要求の予定からの遅れは最大3.874ms、要求から応答の遅れは最大21.1399ms。これは今回の測定範囲で、イベント自体の遅れやP+内部の代入時刻を表すものではない。
+- StartingをStartが、連続Changeを後続Changeが置き換えても、先行通知の最初の取得を保持した。同一main update内での置き換えをこのログだけから再現済みとはしない。その条件は自動テストで検証している。
+- 名前・タグを要求した20観測は両方ともok（計40応答）。eventId 9/10はすべての要求済みIDがokだが、連続通知が続いてmetadataの後取得開始前に5秒上限へ達したためreason=timeout。VMのID取得失敗ではない。eventId 25は移動後約878msでシーンが終了し、6回のID取得のみを残して名前・タグは未要求。名前・タグの網羅取得とIDタイミング取得の範囲を区別する。
+- 02:15:28の変更でIDが `djmq34yw` から `4v7hmy0m` へ変わり、変更通知の初回から後続まで `4v7hmy0m` を返した。02:15:41の移動後も同じIDを保持した。2回目のシーンの連続変更も、各通知内では取得IDが一貫していた。
+- 変更通知を伴わない02:15:47〜52、02:15:58、02:16:04〜05、02:16:10のStageStartはP+ログで同じアニメーションのS2/S3/S4/S5への進行と照合できた。この箇所はアニメーション全体の変更通知の欠落と判断しない。
+- SSCのerror/critical、request/window/report容量超過は0件。P+ログには02:15:41.918と02:16:10.582の移動時に `ReplaceCenterRef is not on valid thread` があり、別途02:15:20.524に `Missing interface, scaling disabled` がある。これらはSSCの取得失敗ではなく、原因をこのPoCの有無へ帰属する根拠もない。両ログに保全した。
+
+結論: 今回の受信イベントに対するID取得タイミングでは、イベント起点の一回取得に追跡を追加する必要を示す結果はなかった。これはイベント駆動案を支持する実測であり、全経路の通知網羅や競合不在の証明ではない。選択画面からの変更を実施したかはユーザーへ照会中。ロード・新規ゲーム・NPC別シーン・容量上限は今回の実ゲームログでの検証済みとしない。実装変更・ビルド・再配置は行わず、結果記録のみ。
+
+## 2026-09-14 タイミングPoCレビューとv3の修正
+
+レビュー基点はHEAD `0fe3c90f5c8da04b394e7ddcae5866570a97f765` とv2の作業ツリー。要件・正確性・回帰/API・検証品質の4観点で独立レビューを実施した。修正前の対象は `build/animation-metadata-v2-review-snapshot` に保存した。発見をこの世代で固定し、ユーザーの「改善して」に従って以下の指摘を修正した。元レビューにmust-fixはなく、観測範囲の改善と制限の明示が対象である。
+
+| 固定した指摘 | 修正・処置 | 解消確認 |
+| --- | --- | --- |
+| COR-01: 同一main updateの連続通知で先の最初の取得が消える | 通知処理内で最初のID要求を出し、通知ごとの窓に要求済み応答を保持する。後続通知は追加要求のみ停止する | 同一batchの2通知と逆順応答のテスト、および元レビュアーの解消確認で閉鎖 |
+| REG-01: 名前・タグや先のID応答待ちが次のID要求を遅らせる | ID予定要求を応答待ちから分離。名前・タグは観測IDに対する後取得として分離する | 全ID応答を保留した8要求、旧metadata遅延中の次イベントのテストと解消確認で閉鎖 |
+| REQ-1 / VER-01: 操作経路と通知有無の確認が任意 | 変更キー・選択画面、操作順、画面上の変更前後の名前、通知がない操作の記録を必須化する | 検証品質レビュアーが元の不足の解消を確認。実操作の結果はまだ未取得 |
+| REG-02: 追加の同期ログが初回取得を遅らせる | PoCの要求前ログを削除し、詳細報告はIDの予定要求が終わってから出す | 回帰レビュアーが軽減を確認。既存ログやVM負荷の影響は残ると仕様に明記 |
+
+`AnimationMetadataCapture` をVM依存のreaderから分離し、同じcapture処理に制御可能な時刻・遅延応答を渡してテストする。追加テストは同一batch、逆順応答、応答が一件も返らない間の予定要求、遅いmetadata、load後の遅延旧応答、終了・別scene・移動完了、通知過多と報告上限、正常な空タグを扱う。16通知・128未解放callback・64保留報告で制限し、上限による欠落をログへ明示する。VM callbackの実行やP+の通知網羅性をシミュレータで確認したものではない。
+
+指摘解消のレビューは元の発生条件と修正起因のmust-fix退行だけを対象とした。正確性・回帰・検証品質の各レビュアーが閉鎖を確認し、新しいmust-fix退行はなかった。API経由の非同期取得とprivate mailboxの方針は維持する。
+
+`build.cmd`成功。追加テストを含む既存4テスト群、x64/SKSE exports/依存DLL検査が成功。Skyrim未起動を確認しMO2へDLL/PDBを配置、distと両ファイルのSHA256一致を確認した。旧版と直前ログは `build/animation-metadata-timing-v3-backup-20260914-021326` に保全済み。DLL SHA256: `DAD1AF229032566796B8163C759E4B887B33A612DBDA3B046D92A908A5276EB0`。ログ識別子は `AnimationMetadata timing v3`、要求・応答時刻は報告の出力時刻とは別に記録する。v3の実ゲーム確認は未実施。
+
+## 2026-09-14 アニメーション情報のタイミング検証PoC v2
+
+v1のゲーム内ログを `build/animation-metadata-v1-20260914-014647.log` に保全した。5種類、全14観測で名前・タグのstatusがok、取得前後のIDがsame_idだった。ただし01:46:29.033の変更通知は直前と同じIDを返しており、この観測は次の変更で打ち切られた。「変更通知1回の取得だけで必ず新しい値が得られる」という結論は出さない。
+
+配置済み `sslThreadModel.psc:1156` の `ResetScene` は同期中・settle期間中に切り替えを見送る、または要求を保留する経路を持つ。`sslThreadController.psc:235` はこの処理の前に `AnimationChange` を送る。`:1534` 付近の `OnAnimationSynchronized` にある `AnimationStart` は初回だけで、各変更後に必ず送られる完了通知にはできない。PSCを確認した結果であり、PEX/DLL内部の実測とは区別する。
+
+v2は既存の開始・変更にActorsRelocatedを追加し、各通知のSubmitEvent時刻と通番を観測へ引き継ぐ。時刻の基準はSSCのイベント投入時点であり、P+内部の送信命令・ID代入時刻ではない。各VM要求とcallback到着の時刻を記録する。観測予定は投入から0/25/50/100/250/500/1000/2000ms、実際の要求時刻を別途記録し、main updateで直列に実施する。観測処理開始から5秒で打ち切る。取得時刻は要求〜callbackの区間内にあると解釈する。
+
+ログ識別子は `AnimationMetadata timing v2`。phase=queued/observing/sample/closedとeventIdで対応付ける。中断時も未完了sampleと理由を出し、previousObservedID・firstID・lastIDで前後を比較できる。後続通知のない間だけ最大8観測する診断であり、製品版ストア・regex・フィルタ・常時ポーリングは追加していない。
+
+最終 `build.cmd`、既存4テスト群、x64/SKSE exports/依存DLL検査が成功。新しい時刻ログのゲーム内検証は未実施。Skyrim未起動を確認してMO2へDLL/PDBを配置し、distと両方のSHA256が一致した。旧版は `build/animation-metadata-timing-v2-backup-20260914-015804` に退避済み。DLL SHA256: `711C692AB83F2DC3F86FA001D2E4589CE14D1B4722868033E7540E273019BAF5`。確認手順は[PoC仕様](animation-metadata-poc.md)に記載。
+
+## 2026-09-14 アニメーション名・タグ取得PoC
+
+期待動作とゲーム内確認手順は[アニメーション情報取得PoC](animation-metadata-poc.md)を参照する。
+
+取得元は配置済み `F:\Games\BottleRim\mods\SexLab Framework PPLUS\Source\Scripts` で確認した。`sslThreadModel.psc:14` に `String Function GetActiveScene() native`、`SexlabRegistry.psc:90` に `String Function GetSceneName(String asID) native global`、同`:105` に `String[] Function GetSceneTags(String asID) native global` がある。`sslThreadController` は `sslThreadModel` を継承する。`GetSceneTags` は全stageのタグを合わせたsceneタグであり、`sslThreadModel.GetTags` が返す候補集合の共通タグとは異なる。同梱PSCの確認であり、実行中PEX/DLLとの一致や実呼び出し成功はまだ確認していない。
+
+`sslThreadController.psc:235–236` の変更操作は `AnimationChange` 通知後に `ResetScene` を呼ぶ。このため通知時点を新しいIDの確定境界とせず、時間をずらした3回の観測を行う。観測ごとに `GetActiveScene` → 表示名・タグ → `GetActiveScene` の非同期VM呼び出しを行い、前後のIDの一致も記録する。`same_id` は前後2回の一致だけを意味し、途中の切り替えが絶対になかった保証ではない。
+
+`AnimationMetadataProbe` は既存のmain updateで通知・結果・期限を処理する。VM callbackは専用mailboxに値をコピーするだけとし、カメラやゲームオブジェクトへアクセスしない。後続通知・終了・lifecycle世代変更で古いmailboxを観測対象から外す。5秒で未完了の観測を打ち切るが、VMへ渡した呼び出し自体の取消を保証しない。遅延callbackは破棄済みmailboxへ書くだけで、次の観測へ混ざらない。プリセットや公開runtimeインターフェースは変更していない。
+
+検証: `build.cmd`成功、既存4テスト群成功、x64/SKSE exports/依存DLL検査成功。これは既存処理の回帰確認であり、新しいVM呼び出しの実ゲーム検証ではない。初回ビルドの引数テンプレートエラーは、文字列を値として渡す修正で解消した。
+
+Skyrim未起動を確認し、MO2の `Sexlab Scene Camera` へDLL/PDBを配置してdistとのSHA256一致を確認した。旧ファイルは `build/animation-metadata-probe-v1-backup-20260914-014114` に退避済み。DLL SHA256: `83026CC9BD4B6AC558F74A217E6DC9D721E05A8EDD267A7364380DE4B9F1C096`。ログの識別子は `AnimationMetadata probe v1`。次はプレイヤー参加シーンの開始・アニメーション変更のゲーム内ログで取得可否を判断する。regexエディタとフィルタは未実装。
+
 調査・修正日: 2026-09-06。調査基点: `8434aec`、最終検証対象は本作業の変更を含むワークスペース。本書は調査証跡であり、現行の期待動作は各設計文書を参照する。修正前の不整合と、修正後の保証範囲を区別する。
 
 ## 2026-09-11 Move Scene: 検出条件の調査（本修正前）

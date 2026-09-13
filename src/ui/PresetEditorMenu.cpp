@@ -5,6 +5,8 @@
 #include "runtime/EditHotkeySettings.h"
 #include "runtime/PresetPreviewService.h"
 #include "runtime/PresetRepository.h"
+#include "runtime/PresetFilterEvaluator.h"
+#include "SceneCamera.h"
 #include "runtime/WorldDebugVisualization.h"
 
 #include <SKSEMenuFramework.h>
@@ -38,6 +40,9 @@ namespace ssc::ui
             std::array<char, 128> idBuffer{};
             std::array<char, 128> nameBuffer{};
             std::string savedName;
+            std::array<char, 512> animationNameRegex{};
+            std::array<char, 512> animationTagRegex{};
+            std::string savedNameRegex, savedTagRegex, filterError;
             std::string selectedID;
             std::string pendingID;
             runtime::PresetTransform savedTransform{};
@@ -96,6 +101,20 @@ namespace ssc::ui
                 state.nameBuffer.data());
         }
 
+        void SetFilters(std::string_view name, std::string_view tag)
+        {
+            state.animationNameRegex.fill('\0'); state.animationTagRegex.fill('\0');
+            std::copy_n(name.data(), std::min(name.size(), state.animationNameRegex.size() - 1), state.animationNameRegex.data());
+            std::copy_n(tag.data(), std::min(tag.size(), state.animationTagRegex.size() - 1), state.animationTagRegex.data());
+            state.filterError.clear();
+        }
+
+        bool FiltersDirty()
+        {
+            return state.savedNameRegex != state.animationNameRegex.data() ||
+                state.savedTagRegex != state.animationTagRegex.data();
+        }
+
         [[nodiscard]] std::string PresetName(std::string_view a_id)
         {
             const auto snapshot = runtime::PresetRepository::GetSingleton()->Snapshot();
@@ -121,6 +140,9 @@ namespace ssc::ui
             state.selectedID = a_preset.id;
             SetIDBuffer(a_preset.id);
             state.savedName = a_preset.name;
+            state.savedNameRegex = a_preset.animationNameRegex;
+            state.savedTagRegex = a_preset.animationTagRegex;
+            SetFilters(state.savedNameRegex, state.savedTagRegex);
             SetNameBuffer(a_preset.name);
             state.savedTransform = a_preset.transform;
             state.draftTransform = a_preset.transform;
@@ -189,6 +211,7 @@ namespace ssc::ui
             state.selectedID.clear();
             SetIDBuffer(NextPresetID());
             state.savedName.clear();
+            state.savedNameRegex.clear(); state.savedTagRegex.clear(); SetFilters({}, {});
             SetNameBuffer("New preset");
             state.savedTransform = kNewPresetTransform;
             state.draftTransform = kNewPresetTransform;
@@ -207,6 +230,7 @@ namespace ssc::ui
             state.selectedID.clear();
             SetIDBuffer(NextPresetID());
             state.savedName.clear();
+            state.savedNameRegex.clear(); state.savedTagRegex.clear(); SetFilters({}, {});
             SetNameBuffer("New preset");
             state.savedTransform = *feedback->currentTransform;
             state.draftTransform = *feedback->currentTransform;
@@ -223,7 +247,8 @@ namespace ssc::ui
                 return false;
             }
             const auto id = DraftID();
-            const runtime::CameraPreset candidate{ id, state.draftTransform, state.nameBuffer.data() };
+            const runtime::CameraPreset candidate{ id, state.draftTransform, state.nameBuffer.data(),
+                state.animationNameRegex.data(), state.animationTagRegex.data() };
             if (const auto error = runtime::ValidateCameraPreset(candidate); !error.empty()) {
                 state.message = error;
                 return false;
@@ -234,7 +259,7 @@ namespace ssc::ui
                 runtime::PresetRepository::GetSingleton()->Update(
                     state.selectedID,
                     state.draftTransform,
-                    candidate.name);
+                    candidate.name, candidate.animationNameRegex, candidate.animationTagRegex);
             if (!result.succeeded) {
                 state.message = result.error;
                 return false;
@@ -242,6 +267,7 @@ namespace ssc::ui
 
             state.selectedID = id;
             state.savedName = candidate.name;
+            state.savedNameRegex = candidate.animationNameRegex; state.savedTagRegex = candidate.animationTagRegex;
             state.savedTransform = state.draftTransform;
             state.creating = false;
             state.dirty = false;
@@ -267,6 +293,7 @@ namespace ssc::ui
                 return;
             }
             SetNameBuffer(state.savedName);
+            SetFilters(state.savedNameRegex, state.savedTagRegex);
             state.draftTransform = state.savedTransform;
             state.dirty = false;
             state.message = "Changes discarded";
@@ -842,11 +869,42 @@ namespace ssc::ui
                 ImGuiMCP::Separator();
                 ImGuiMCP::TextDisabled("ID: %s", DraftID().c_str());
                 if (ImGuiMCP::InputText("Name", state.nameBuffer.data(), state.nameBuffer.size())) {
-                    state.dirty = state.creating || std::string_view{ state.nameBuffer.data() } != state.savedName ||
+                    state.dirty = state.creating || FiltersDirty() || std::string_view{ state.nameBuffer.data() } != state.savedName ||
                         !SameTransform(state.draftTransform, state.savedTransform);
                     PublishDraft();
                 }
 
+                ImGuiMCP::Separator();
+                ImGuiMCP::Text("Animation filters");
+                ImGuiMCP::TextWrapped("Choose when this preset is eligible for initial selection and A/D switching.");
+                bool filterChanged = ImGuiMCP::InputText("Name filter (regex)",
+                    state.animationNameRegex.data(), state.animationNameRegex.size());
+                filterChanged |= ImGuiMCP::InputText("Tag filter (regex)",
+                    state.animationTagRegex.data(), state.animationTagRegex.size());
+                if (filterChanged) {
+                    const runtime::PresetFilterEvaluator filter{
+                        state.animationNameRegex.data(), state.animationTagRegex.data() };
+                    state.filterError = filter.Error();
+                    state.dirty = state.creating || FiltersDirty() ||
+                        std::string_view{ state.nameBuffer.data() } != state.savedName ||
+                        !SameTransform(state.draftTransform, state.savedTransform);
+                }
+                ImGuiMCP::TextWrapped("Leave blank for no restriction. Both filters must match. Tag filter searches the whole space-separated tag list. Case-insensitive.");
+                if (!state.filterError.empty()) {
+                    ImGuiMCP::TextWrapped("Regex error: %s", state.filterError.c_str());
+                }
+                const auto animation = SceneCamera::GetSingleton()->AnimationUpdates().Published();
+                if (!animation) {
+                    ImGuiMCP::TextDisabled("Animation: awaiting current metadata / no active scene");
+                } else if (!animation->known) {
+                    ImGuiMCP::TextDisabled("Animation: metadata unavailable; only unrestricted presets are eligible");
+                } else {
+                    ImGuiMCP::TextWrapped("Animation: %s", animation->name.c_str());
+                    std::string tags;
+                    for (const auto& tag : animation->tags) { if (!tags.empty()) { tags += ", "; } tags += tag; }
+                    ImGuiMCP::TextWrapped("Tags: %s", tags.c_str());
+                }
+                ImGuiMCP::Separator();
                 ImGuiMCP::TextDisabled("Screen-relative framing");
                 bool transformChanged = false;
                 transformChanged |= ImGuiMCP::DragFloat(
@@ -873,7 +931,7 @@ namespace ssc::ui
                     0.25F, kMinimumFOVOffsetDegrees, kMaximumFOVOffsetDegrees, "%.1f deg",
                     ImGuiMCP::ImGuiSliderFlags_AlwaysClamp);
                 if (transformChanged) {
-                    state.dirty = state.creating || std::string_view{ state.nameBuffer.data() } != state.savedName ||
+                    state.dirty = state.creating || FiltersDirty() || std::string_view{ state.nameBuffer.data() } != state.savedName ||
                         !SameTransform(state.draftTransform, state.savedTransform);
                     PublishDraft();
                 }
@@ -908,7 +966,7 @@ namespace ssc::ui
                 }
 
                 const auto hasDraft = state.creating || !state.selectedID.empty();
-                ImGuiMCP::BeginDisabled(!CanSavePreset(
+                ImGuiMCP::BeginDisabled(!state.filterError.empty() || !CanSavePreset(
                     hasDraft, state.dirty, feedback.get(), state.draftRevision));
                 if (ImGuiMCP::Button("Save")) {
                     static_cast<void>(SaveDraft());

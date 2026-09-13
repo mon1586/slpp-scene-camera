@@ -159,6 +159,8 @@ namespace ssc::core
     std::string_view CandidateFailureReasonName(CandidateFailureReason a_reason) noexcept
     {
         switch (a_reason) {
+        case CandidateFailureReason::kAnimationFilter:
+            return "animation filter mismatch or metadata unknown";
         case CandidateFailureReason::kNone:
             return "usable";
         case CandidateFailureReason::kPoseUnavailable:

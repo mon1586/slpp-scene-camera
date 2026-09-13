@@ -70,6 +70,9 @@ namespace ssc::runtime
             if (a_name == "AnimationStart"sv) {
                 return SceneEventType::kAnimationStart;
             }
+            if (a_name == "StageStart"sv || a_name == "HookStageStart"sv) {
+                return SceneEventType::kStageStart;
+            }
             if (a_name == "AnimationChange"sv) {
                 return SceneEventType::kAnimationChange;
             }
@@ -326,27 +329,6 @@ namespace ssc::runtime
             const auto* rawStrArg = a_event->strArg.c_str();
             const auto strArg = rawStrArg ? std::string_view{ rawStrArg } : std::string_view{};
 
-            // Keep raw callback diagnostics during Move Scene acceptance testing,
-            // including names which are not part of the SceneEvent contract.
-            if (quest && PluginFilenameEquals(definingFile, "SexLab.esm"sv)) {
-                try {
-                    logger::info(
-                        "MoveScene probe v1 callback: event='{}' sender={:08X} strArg='{}' numArg={}",
-                        eventName, senderID, strArg, a_event->numArg);
-                } catch (...) {
-                    // Logging failure must not prevent delivery of a scene event.
-                }
-            }
-
-            static std::atomic_bool firstCallbackObserved{ false };
-            if (!firstCallbackObserved.exchange(true, std::memory_order_relaxed)) {
-                logger::info(
-                    "First SKSE ModCallbackEvent observed: event='{}' sender={:08X} file='{}'",
-                    eventName,
-                    senderID,
-                    definingFile);
-            }
-
             const auto eventKind = ParseEvent(eventName);
             if (!eventKind) {
                 if (LooksLikeSceneEvent(eventName)) {
@@ -360,14 +342,6 @@ namespace ssc::runtime
                 }
                 return RE::BSEventNotifyControl::kContinue;
             }
-
-            logger::info(
-                "Scene callback received: event='{}' sender={:08X} file='{}' strArg='{}' numArg={}",
-                eventName,
-                senderID,
-                definingFile,
-                strArg,
-                a_event->numArg);
 
             if (!quest || !PluginFilenameEquals(definingFile, "SexLab.esm"sv)) {
                 logger::warn(
@@ -388,12 +362,22 @@ namespace ssc::runtime
             }
 
             if (handler_) {
+                // Establish the receipt boundary before logging or main-queue processing.
+                handler_({ *eventKind, { sourceID, *instanceID }, {} });
+                static std::atomic_bool firstCallbackObserved{ false };
+                if (!firstCallbackObserved.exchange(true, std::memory_order_relaxed)) {
+                    logger::info(
+                        "First SKSE ModCallbackEvent observed: event='{}' sender={:08X} file='{}'",
+                        eventName,
+                        senderID,
+                        definingFile);
+                }
+
                 logger::info(
                     "Scene callback accepted: type={} key={:08X}/{}; queued for main update",
                     SceneEventTypeName(*eventKind),
                     sourceID,
                     *instanceID);
-                handler_({ *eventKind, { sourceID, *instanceID }, {} });
             } else {
                 logger::error(
                     "Ignoring accepted scene callback {:08X}/{}: event handler is unavailable",

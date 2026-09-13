@@ -38,11 +38,13 @@ namespace ssc::runtime
         [[nodiscard]] PresetOperationResult Update(
             std::string_view a_id,
             const PresetTransform& a_transform,
-            std::string_view a_name);
+            std::string_view a_name,
+            std::string_view a_nameRegex = {}, std::string_view a_tagRegex = {});
         [[nodiscard]] PresetOperationResult Delete(std::string_view a_id);
         [[nodiscard]] std::shared_ptr<const CameraPresetSnapshot> Snapshot() const noexcept override;
 
     private:
+        void Publish(std::shared_ptr<const CameraPresetSnapshot> a_snapshot);
         [[nodiscard]] PresetOperationResult PersistAndPublishLocked(
             CameraPresetSnapshot a_snapshot);
 

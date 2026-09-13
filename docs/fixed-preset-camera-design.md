@@ -37,6 +37,8 @@ Data/SKSE/Plugins/SexlabSceneCamera/presets.json
 
 ## schema version 5
 
+アニメーション条件として、各プリセットに任意の文字列項目`animationNameRegex`と`animationTagRegex`を追加する。省略・空文字列は条件なし。保存時は両項目を書き出す。各項目は511バイト以内でNULを含まない文字列とし、ECMAScript正規表現の部分一致を使う。大文字・小文字の同一視はASCII英字を対象とする。構文不正・型違い・長さ超過は読み込み全体を失敗させ、Reload時は最後の正常な内容を維持する。既存のversion 5ファイルは変更せずに読み込める。
+
 SKSE Menuに表示する設定と操作の仕様は[`preset-settings-spec.md`](preset-settings-spec.md)に分離する。以下は固定プリセット読込で使用する保存形式である。
 
 ```json

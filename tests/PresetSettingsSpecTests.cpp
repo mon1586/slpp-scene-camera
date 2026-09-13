@@ -522,6 +522,15 @@ int main()
         "previous saved name remains readable after a failed save");
     passed &= Check(repository.Update("recovered", combined, "Retry").succeeded,
         "rename can be retried after a persistence failure");
+    passed &= Check(repository.Update("recovered", combined, "Retry", "^Billyy", "Feet|Cowgirl").succeeded,
+        "regex filters can be saved");
+    passed &= Check(repository.Reload().succeeded &&
+        repository.Snapshot()->front().animationNameRegex == "^Billyy" &&
+        repository.Snapshot()->front().animationTagRegex == "Feet|Cowgirl",
+        "both filters survive JSON reload");
+    const auto beforeRegexError = repository.Snapshot();
+    passed &= Check(!repository.Update("recovered", combined, "Retry", "[", "").succeeded &&
+        repository.Snapshot() == beforeRegexError, "invalid regex cannot alter saved preset");
     static_cast<void>(std::filesystem::remove(presetPath, ignored));
 
     const auto hotkeyPath = TemporaryPresetPath();

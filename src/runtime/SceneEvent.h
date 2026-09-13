@@ -11,6 +11,7 @@ namespace ssc::runtime
         kAnimationStarting,
         kAnimationStart,
         kAnimationChange,
+        kStageStart,
         kActorsRelocated,
         kAnimationEnding,
         kAnimationEnd,
@@ -26,6 +27,8 @@ namespace ssc::runtime
             return "AnimationStart"sv;
         case SceneEventType::kAnimationChange:
             return "AnimationChange"sv;
+        case SceneEventType::kStageStart:
+            return "StageStart"sv;
         case SceneEventType::kActorsRelocated:
             return "ActorsRelocated"sv;
         case SceneEventType::kAnimationEnding:
@@ -63,5 +66,6 @@ namespace ssc::runtime
         SceneEventType type{ SceneEventType::kAnimationStarting };
         SceneKey key;
         SceneParticipantSnapshot participants;
+        std::uint64_t receipt{ 0 };
     };
 }

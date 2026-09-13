@@ -20,7 +20,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 
 option(SSC_BUILD_TESTS "Build unit tests" ON)
 
-# The POC uses a vtable hook and does not allocate a trampoline. Keep CommonLib's
+# Keep CommonLib's
 # own tests and patch-safety-only dependency out of this consumer build.
 set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(SKSE_SUPPORT_PATCH_SAFETY OFF CACHE BOOL "" FORCE)
@@ -35,6 +35,8 @@ if(NOT COMMAND add_commonlibsse_plugin)
 endif()
 
 set(SSC_SOURCES
+    src/runtime/AnimationMetadataReader.cpp
+    src/runtime/AnimationUpdateCoordinator.cpp
     src/SceneCamera.cpp
     src/SceneCamera.h
     src/SceneSession.h
@@ -157,6 +159,8 @@ if(SSC_BUILD_TESTS)
     add_executable(
         SexlabSceneCameraTests
         tests/SceneSessionTests.cpp
+        tests/AnimationUpdateCoordinatorTests.cpp
+        src/runtime/AnimationUpdateCoordinator.cpp
         src/core/CameraPose.cpp
         src/core/CameraPose.h
         src/core/SceneAnchor.cpp
@@ -251,6 +255,9 @@ if(SSC_BUILD_TESTS)
     add_executable(
         SexlabSceneCameraFlowTests
         tests/SceneCameraFlowTests.cpp
+        tests/AnimationFilterIntegrationTests.cpp
+        src/runtime/PresetRepository.cpp
+        src/runtime/AnimationUpdateCoordinator.cpp
         tests/TDMTargetLockControlTests.cpp
         src/runtime/MainUpdateDispatcher.cpp
         src/runtime/TDMTargetLockControl.cpp
@@ -285,6 +292,7 @@ if(SSC_BUILD_TESTS)
         SexlabSceneCameraFlowTests
         PRIVATE
             CommonLibSSE::CommonLibSSE
+            nlohmann_json::nlohmann_json
     )
     target_compile_definitions(
         SexlabSceneCameraFlowTests

@@ -70,6 +70,7 @@ namespace ssc::core
         kAnchorUnavailable,
         kAnchorCenterObstructed,
         kAnchorCornersObstructed,
+        kAnimationFilter,
     };
 
     struct CameraCandidateVisibility

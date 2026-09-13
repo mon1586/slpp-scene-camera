@@ -9,56 +9,6 @@ namespace ssc::runtime
     {
         constexpr std::size_t kUpdateSlot = 0x03;
 
-        // Temporary, observation-only Move Scene probe. Only the main update
-        // reads engine state. Lifecycle invalidation may arrive on another thread.
-        std::atomic_bool moveSceneProbeEnabled{ false };
-
-        void ObserveMoveSceneState(std::uint64_t a_generation) noexcept
-        {
-            try {
-                static std::optional<std::array<int, 7>> previous;
-                static std::uint64_t previousGeneration = 0;
-                if (!moveSceneProbeEnabled.load(std::memory_order_acquire)) {
-                    previous.reset();
-                    return;
-                }
-                if (previousGeneration != a_generation) {
-                    previous.reset();
-                    previousGeneration = a_generation;
-                }
-                const auto* player = RE::PlayerCharacter::GetSingleton();
-                const auto* controls = RE::ControlMap::GetSingleton();
-                const auto* camera = RE::PlayerCamera::GetSingleton();
-                auto* ui = RE::UI::GetSingleton();
-                if (!player || !player->Get3D() || !controls || !ui) {
-                    previous.reset();
-                    return;
-                }
-                const auto state = camera && camera->currentState ?
-                    static_cast<int>(camera->currentState->id) : -1;
-                const std::array<int, 7> sample{
-                    state,
-                    controls->IsMovementControlsEnabled(),
-                    controls->IsLookingControlsEnabled(),
-                    controls->IsPOVSwitchControlsEnabled(),
-                    controls->IsFightingControlsEnabled(),
-                    ui->GameIsPaused(),
-                    SmoothCamCameraControl::GetSingleton()->OwnsCamera(),
-                };
-                if (previous == sample) {
-                    return;
-                }
-                logger::info(
-                    "MoveScene probe v1 state: generation={} camera={} movement={} looking={} povSwitch={} fighting={} paused={} sscReportedOwner={} worldFOV={} currentThread={}",
-                    a_generation, sample[0], sample[1], sample[2], sample[3], sample[4], sample[5], sample[6],
-                    camera ? camera->GetRuntimeData2().worldFOV : 0.0F,
-                    REX::W32::GetCurrentThreadId());
-                previous = sample;
-            } catch (...) {
-                // Diagnostics must never change the scene's lifetime or controls.
-            }
-        }
-
         struct HookCandidate
         {
             std::uintptr_t vtable{ 0 };
@@ -121,8 +71,8 @@ namespace ssc::runtime
 
     void CameraHook::InvalidatePendingEvents() noexcept
     {
-        moveSceneProbeEnabled.store(false, std::memory_order_release);
         eventGeneration_.fetch_add(1, std::memory_order_acq_rel);
+        if (auto* client = client_) { client->InvalidateSceneEvents(); }
     }
 
     bool CameraHook::InstallMainUpdateHook()
@@ -168,7 +118,6 @@ namespace ssc::runtime
             if (auto* client = client_) {
                 mainUpdates_.Tick(*client);
             }
-            ObserveMoveSceneState(eventGeneration_.load(std::memory_order_acquire));
         } catch (...) {
             HandleBoundaryFailure("main update dispatcher"sv);
         }
@@ -188,6 +137,7 @@ namespace ssc::runtime
 
     void CameraHook::SubmitEvent(SceneEvent a_event)
     {
+        if (auto* client = client_) { client->ReceiveSceneEvent(a_event); }
         if (!mainUpdateInstalled_.load(std::memory_order_acquire)) {
             logger::error(
                 "Ignoring scene event {} {:08X}/{}: main update dispatcher is unavailable",
@@ -289,9 +239,6 @@ namespace ssc::runtime
                         preparedEvent.key.sourceID,
                         preparedEvent.key.instanceID);
                     return;
-                }
-                if (isStartEvent && preparedEvent.participants.ContainsPlayer()) {
-                    moveSceneProbeEnabled.store(true, std::memory_order_release);
                 }
                 logger::info(
                     "Scene event delivered to procedure layer: type={} key={:08X}/{}",

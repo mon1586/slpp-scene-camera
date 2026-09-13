@@ -1,11 +1,24 @@
 #include "SceneCamera.h"
 
 #include "runtime/CameraPoseAdapter.h"
+#include "runtime/PresetFilterEvaluator.h"
 
 namespace ssc
 {
     namespace
     {
+        runtime::AnimationUpdateCoordinator::Event MetadataEvent(runtime::SceneEventType type)
+        {
+            using E = runtime::AnimationUpdateCoordinator::Event;
+            switch (type) {
+            case runtime::SceneEventType::kAnimationStarting: return E::Starting;
+            case runtime::SceneEventType::kAnimationStart: return E::Start;
+            case runtime::SceneEventType::kAnimationChange: return E::Change;
+            case runtime::SceneEventType::kStageStart: return E::Stage;
+            case runtime::SceneEventType::kActorsRelocated: return E::Relocated;
+            default: return E::End;
+            }
+        }
         constexpr auto kMaximumSceneDuration = std::chrono::minutes{ 30 };
         constexpr auto kTargetUnlockTimeout = std::chrono::seconds{ 2 };
         constexpr auto kDebugResumeInterval = std::chrono::milliseconds{ 500 };
@@ -92,8 +105,23 @@ namespace ssc
                debugMode != debugModeObserved_;
     }
 
+    void SceneCamera::ReceiveSceneEvent(runtime::SceneEvent& a_event)
+    {
+        if (animationUpdates_.Enabled()) {
+            a_event.receipt = animationUpdates_.Receive(MetadataEvent(a_event.type), a_event.key, now_());
+        }
+    }
+
+    void SceneCamera::InvalidateSceneEvents() noexcept
+    {
+        animationUpdates_.Invalidate();
+    }
+
     void SceneCamera::HandleSceneEvent(const runtime::SceneEvent& a_event)
     {
+        if (a_event.receipt && !animationUpdates_.IsLiveReceipt(a_event.receipt)) { return; }
+        animationUpdates_.Observe(MetadataEvent(a_event.type), a_event.key,
+            a_event.participants.ContainsPlayer(), a_event.receipt, now_());
         switch (a_event.type) {
         case runtime::SceneEventType::kAnimationStarting:
             OnAnimationStarting(a_event);
@@ -101,6 +129,7 @@ namespace ssc
         case runtime::SceneEventType::kAnimationStart:
             OnAnimationStart(a_event);
             break;
+        case runtime::SceneEventType::kStageStart:
         case runtime::SceneEventType::kAnimationChange:
             OnAnimationChange(a_event);
             break;
@@ -193,7 +222,7 @@ namespace ssc
         if (!ProcessPendingReset("pending reset"sv)) {
             return;
         }
-        logger::info("AnimationChange {:08X}/{}", a_event.key.sourceID, a_event.key.instanceID);
+        logger::info("{} {:08X}/{}", runtime::SceneEventTypeName(a_event.type), a_event.key.sourceID, a_event.key.instanceID);
 
         if (!session_.IsActive() || !session_.Matches(a_event.key)) {
             logger::info("Ignoring stale AnimationChange {:08X}/{}",
@@ -245,6 +274,12 @@ namespace ssc
 
     void SceneCamera::ProcessMainUpdate()
     {
+        animationUpdates_.Tick(now_());
+        if (session_.IsActive() && animationUpdates_.Enabled() &&
+            (animationUpdates_.Ready() != evaluatedMetadata_ ||
+                (presetProvider_ && presetProvider_->Snapshot() != evaluatedPresets_))) {
+            sceneEvaluationPending_.store(true, std::memory_order_release);
+        }
         if (!session_.IsActive() || resetRequested_.load(std::memory_order_acquire)) {
             return;
         }
@@ -268,7 +303,7 @@ namespace ssc
         const auto cameraReturned = ReleaseCamera("player movement or free camera active"sv, false);
         if (!controls || controls->movementEnabled || controls->freeCamera ||
             !controls->sceneCameraSupported || controls->paused ||
-            !targetReturned || !cameraReturned) {
+            !targetReturned || !cameraReturned || animationUpdates_.Pending()) {
             return;
         }
 
@@ -397,10 +432,11 @@ namespace ssc
 
         const auto sceneEvaluationPending =
             sceneEvaluationPending_.load(std::memory_order_acquire);
+        const auto metadataPending = animationUpdates_.Pending();
         const auto sceneEvaluationReady =
-            sceneEvaluationPending;
+            sceneEvaluationPending && !metadataPending;
         const auto shouldTrackAnchor =
-            session_.IsActive() && (anchor_.has_value() || sceneEvaluationReady);
+            session_.IsActive() && (anchor_.has_value() || sceneEvaluationPending);
         bool anchorRefreshed = false;
         bool poseAppliedThisUpdate = false;
         bool evaluatedThisUpdate = false;
@@ -457,10 +493,10 @@ namespace ssc
             anchorLOSTimeSeconds_ = 0.0F;
         }
         if (sceneEvaluationReady && anchorRefreshed) {
-            sceneEvaluationPending_.store(false, std::memory_order_release);
             if (!EvaluateVisibility(previewEnded ? previewRequest->presetID : "")) {
                 return;
             }
+            sceneEvaluationPending_.store(false, std::memory_order_release);
             evaluatedThisUpdate = true;
             anchorInputUnavailable_ = false;
             if (!debugMode && !debugResumePending_.load(std::memory_order_acquire)) {
@@ -472,7 +508,7 @@ namespace ssc
             }
         }
 
-        if (debugResumePending_.load(std::memory_order_acquire) &&
+        if (!metadataPending && debugResumePending_.load(std::memory_order_acquire) &&
             !sceneEvaluationPending_.load(std::memory_order_acquire) &&
             anchorRefreshed && now >= debugResumeNextAttempt_) {
             if (!ResolveTransform(previewRequest)) {
@@ -497,7 +533,7 @@ namespace ssc
         }
 
         const auto runningTime = std::isfinite(a_deltaSeconds) && a_deltaSeconds > 0.0F;
-        if (!evaluatedThisUpdate && !previewSessionActive && !previewEnded &&
+        if (!metadataPending && !evaluatedThisUpdate && !previewSessionActive && !previewEnded &&
             !sceneEvaluationPending_.load(std::memory_order_acquire) && anchorRefreshed && runningTime) {
             anchorLOSTimeSeconds_ += a_deltaSeconds;
             if (anchorInputUnavailable_ || anchorLOSTimeSeconds_ >= anchorLOSMetrics_.intervalSeconds) {
@@ -506,7 +542,7 @@ namespace ssc
                 anchorInputUnavailable_ = false;
             }
         }
-        const auto canStep = anchorRefreshed && !anchorInputUnavailable_ &&
+        const auto canStep = !animationUpdates_.Pending() && anchorRefreshed && !anchorInputUnavailable_ &&
             !debugResumePending_.load(std::memory_order_acquire) &&
             !previewSessionActive && !sceneEvaluationPending_.load(std::memory_order_acquire);
         presetSwitchEnabled_.store(canStep, std::memory_order_release);
@@ -529,7 +565,7 @@ namespace ssc
             return;
         }
 
-        if (previewEnded && !evaluatedThisUpdate &&
+        if (previewEnded && !metadataPending && !evaluatedThisUpdate &&
             !EvaluateVisibility(previewRequest->presetID)) {
             return;
         }
@@ -632,6 +668,7 @@ namespace ssc
         bool& a_poseApplied)
     {
         a_poseApplied = false;
+        if (!a_liveEdit && animationUpdates_.Pending() && !cameraPose_) { return true; }
         const auto transform = ResolveTransform(a_request);
         if (!transform) {
             appliedPreviewRequest_ = a_request;
@@ -787,13 +824,26 @@ namespace ssc
             std::move(pointResults));
     }
 
-    void SceneCamera::MeasureAnchorLOS()
+    bool SceneCamera::MeasureAnchorLOS()
     {
-        if (!anchor_) {
-            return;
-        }
+        if (!anchor_) { return false; }
+        const auto metadata = animationUpdates_.Ready();
+        if (animationUpdates_.Enabled() && !metadata) { return false; }
+        std::uint64_t position;
+        { std::scoped_lock lock{ runtime::SelectionBoundary() }; position = animationUpdates_.PositionLocked(); }
         const auto startedAt = std::chrono::steady_clock::now();
         const auto presets = presetProvider_ ? presetProvider_->Snapshot() : nullptr;
+        if (filterPresets_ != presets || filterMetadata_ != metadata) {
+            filterMatches_.clear();
+            if (presets) {
+                const runtime::AnimationMetadata unknown;
+                for (const auto& preset : *presets) {
+                    const runtime::PresetFilterEvaluator filter{ preset.animationNameRegex, preset.animationTagRegex };
+                    filterMatches_.push_back(filter.Matches(metadata ? *metadata : unknown));
+                }
+            }
+            filterPresets_ = presets; filterMetadata_ = metadata;
+        }
         auto evaluation = std::make_shared<core::VisibilityEvaluationSnapshot>();
         std::size_t rayCount = 0;
         std::size_t visibleCenters = 0;
@@ -801,9 +851,14 @@ namespace ssc
         double traceMilliseconds = 0.0;
         if (presets) {
             evaluation->candidates.reserve(presets->size());
+            std::size_t index = 0;
             for (const auto& preset : *presets) {
                 auto candidate = EvaluateVisibilityCandidate(
                     preset.id, preset.transform, rayCount, &traceMilliseconds);
+                if (!filterMatches_[index++]) {
+                    candidate.usable = false;
+                    candidate.failureReason = core::CandidateFailureReason::kAnimationFilter;
+                }
                 for (const auto& point : candidate.points) {
                     if (point.status == core::VisibilityPointStatus::kVisible) {
                         if (point.point == core::VisibilityPoint::kAnchor) {
@@ -829,7 +884,21 @@ namespace ssc
         anchorLOSMetrics_.rayQueryCount = rayCount;
         evaluation->anchorLOS = anchorLOSMetrics_;
         evaluation->selectedPresetID = activePresetID_;
-        visibilityEvaluation_ = std::move(evaluation);
+        const bool metadataChanged = metadata != evaluatedMetadata_;
+        {
+            std::scoped_lock lock{ runtime::SelectionBoundary() };
+            if (!animationUpdates_.ValidLocked(metadata) ||
+                position != animationUpdates_.PositionLocked() ||
+                (presetProvider_ && presetProvider_->Snapshot() != presets)) { return false; }
+            animationUpdates_.CommitLocked(metadata);
+            evaluatedMetadata_ = metadata; evaluatedPresets_ = presets; evaluatedPosition_ = position;
+            visibilityEvaluation_ = std::move(evaluation);
+        }
+        if (metadataChanged && metadata) {
+            logger::info("Animation filter committed: revision={} known={} id='{}' name='{}' tags={} candidates={}",
+                metadata->revision, metadata->known, metadata->id, metadata->name, metadata->tags.size(),
+                visibilityEvaluation_->candidates.size());
+        }
         anchorLOSTimeSeconds_ = 0.0F;
         if (debugVisualization_) {
             debugVisualization_->ShowVisibility(visibilityEvaluation_);
@@ -853,6 +922,7 @@ namespace ssc
                 anchorLOSMetrics_.maximumMilliseconds,
                 anchorLOSMetrics_.averageMilliseconds / anchorLOSMetrics_.intervalSeconds);
         }
+        return true;
     }
 
     bool SceneCamera::EvaluatePreviewVisibility(
@@ -891,23 +961,31 @@ namespace ssc
         if (!anchor_) {
             return false;
         }
-        MeasureAnchorLOS();
+        if (!MeasureAnchorLOS()) { return false; }
+        auto selected = activePresetID_;
         if (!initialPresetSelectionDone_) {
-            activePresetID_ = candidateSelector_.SelectInitial(visibilityEvaluation_->candidates);
-            initialPresetSelectionDone_ = true;
+            selected = candidateSelector_.SelectInitial(visibilityEvaluation_->candidates);
         }
         const auto exists = [&](std::string_view a_id) {
             return std::ranges::any_of(visibilityEvaluation_->candidates,
                 [&](const auto& a_candidate) { return a_candidate.presetID == a_id; });
         };
         if (!a_preferredPresetID.empty() && exists(a_preferredPresetID)) {
-            activePresetID_ = a_preferredPresetID;
-        } else if (activePresetID_ && !exists(*activePresetID_)) {
-            activePresetID_.reset();
+            selected = a_preferredPresetID;
+        } else if (selected && !exists(*selected)) {
+            selected.reset();
         }
         auto evaluation = std::make_shared<core::VisibilityEvaluationSnapshot>(*visibilityEvaluation_);
-        evaluation->selectedPresetID = activePresetID_;
-        visibilityEvaluation_ = std::move(evaluation);
+        evaluation->selectedPresetID = selected;
+        {
+            std::scoped_lock selection{ runtime::SelectionBoundary() };
+            if (!animationUpdates_.ValidLocked(evaluatedMetadata_) ||
+                evaluatedPosition_ != animationUpdates_.PositionLocked() ||
+                (presetProvider_ && presetProvider_->Snapshot() != evaluatedPresets_)) { return false; }
+            activePresetID_ = std::move(selected);
+            initialPresetSelectionDone_ = true;
+            visibilityEvaluation_ = std::move(evaluation);
+        }
         if (debugVisualization_) {
             debugVisualization_->ShowVisibility(visibilityEvaluation_);
         }
@@ -939,11 +1017,17 @@ namespace ssc
             return true;
         }
 
-        activePresetID_ = *nextPresetID;
-        auto updatedEvaluation = std::make_shared<core::VisibilityEvaluationSnapshot>(
-            *visibilityEvaluation_);
-        updatedEvaluation->selectedPresetID = activePresetID_;
-        visibilityEvaluation_ = std::move(updatedEvaluation);
+        auto updatedEvaluation = std::make_shared<core::VisibilityEvaluationSnapshot>(*visibilityEvaluation_);
+        updatedEvaluation->selectedPresetID = nextPresetID;
+        auto selected = nextPresetID;
+        {
+            std::scoped_lock selection{ runtime::SelectionBoundary() };
+            if (!animationUpdates_.ValidLocked(evaluatedMetadata_) ||
+                evaluatedPosition_ != animationUpdates_.PositionLocked() ||
+                presetSnapshot != evaluatedPresets_ || presetProvider_->Snapshot() != presetSnapshot) { return true; }
+            activePresetID_ = std::move(selected);
+            visibilityEvaluation_ = std::move(updatedEvaluation);
+        }
         if (debugVisualization_) {
             debugVisualization_->ShowVisibility(visibilityEvaluation_);
         }
@@ -1141,12 +1225,13 @@ namespace ssc
 
     void SceneCamera::RequestReset() noexcept
     {
+        animationUpdates_.Invalidate();
         resetRequested_.store(true, std::memory_order_release);
     }
 
     void SceneCamera::RequestPresetStep(int a_direction) noexcept
     {
-        if (!session_.IsActive() ||
+        if (animationUpdates_.Pending() || !session_.IsActive() ||
             !presetSwitchEnabled_.load(std::memory_order_acquire) ||
             a_direction == 0) {
             return;
@@ -1180,6 +1265,8 @@ namespace ssc
 
     void SceneCamera::StopSceneWork() noexcept
     {
+        animationUpdates_.ClearActive();
+        evaluatedMetadata_.reset(); evaluatedPresets_.reset();
         movementSuspended_ = false;
         targetUnlockQueued_.store(false, std::memory_order_release);
         session_.BeginRestore();
@@ -1215,6 +1302,7 @@ namespace ssc
 
     void SceneCamera::Clear() noexcept
     {
+        animationUpdates_.ClearActive();
         StopSceneWork();
         participants_ = {};
         sceneEvaluationPending_.store(false, std::memory_order_release);

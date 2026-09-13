@@ -31,6 +31,8 @@ namespace ssc::runtime
         std::string id;
         PresetTransform transform;
         std::string name;
+        std::string animationNameRegex;
+        std::string animationTagRegex;
     };
 
     using CameraPresetSnapshot = std::vector<CameraPreset>;

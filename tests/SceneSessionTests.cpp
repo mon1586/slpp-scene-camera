@@ -17,6 +17,8 @@
 #include <string>
 #include <string_view>
 
+bool RunAnimationUpdateCoordinatorTests();
+
 namespace
 {
     bool Check(bool a_condition, std::string_view a_message)
@@ -620,5 +622,6 @@ int main()
         "empty preset array is a valid empty snapshot");
     RemoveFile(emptyPath);
 
+    passed &= RunAnimationUpdateCoordinatorTests();
     return passed ? 0 : 1;
 }

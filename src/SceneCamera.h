@@ -1,6 +1,7 @@
 #pragma once
 
 #include "runtime/ITargetLockControl.h"
+#include "runtime/AnimationUpdateCoordinator.h"
 
 #include "runtime/ICameraControl.h"
 #include "runtime/IDebugVisualization.h"
@@ -39,6 +40,9 @@ namespace ssc
 
         [[nodiscard]] bool NeedsUpdate() const noexcept override;
         [[nodiscard]] bool AllowsUpdateWhilePaused() const noexcept override;
+        runtime::AnimationUpdateCoordinator& AnimationUpdates() noexcept { return animationUpdates_; }
+        void ReceiveSceneEvent(runtime::SceneEvent& a_event) override;
+        void InvalidateSceneEvents() noexcept override;
         void HandleSceneEvent(const runtime::SceneEvent& a_event) override;
         void ProcessMainUpdate() override;
 
@@ -78,7 +82,7 @@ namespace ssc
             const runtime::PresetTransform& a_transform,
             std::size_t& a_rayCount,
             double* a_traceMilliseconds = nullptr);
-        void MeasureAnchorLOS();
+        bool MeasureAnchorLOS();
         [[nodiscard]] core::CameraCandidateVisibility EvaluateVisibilityAtPose(
             std::string a_presetID,
             std::optional<core::CameraPose> a_pose,
@@ -110,6 +114,13 @@ namespace ssc
         std::atomic_bool targetUnlockQueued_{ false };
         std::atomic_bool targetUnlockPending_{ false };
         Clock::time_point targetUnlockDeadline_{};
+        runtime::AnimationUpdateCoordinator animationUpdates_;
+        std::shared_ptr<const runtime::AnimationMetadata> evaluatedMetadata_;
+        std::shared_ptr<const runtime::CameraPresetSnapshot> evaluatedPresets_;
+        std::uint64_t evaluatedPosition_{ 0 };
+        std::shared_ptr<const runtime::AnimationMetadata> filterMetadata_;
+        std::shared_ptr<const runtime::CameraPresetSnapshot> filterPresets_;
+        std::vector<bool> filterMatches_;
         SceneSession session_;
         bool movementSuspended_{ false };
         runtime::SceneParticipantSnapshot participants_;
